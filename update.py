@@ -181,9 +181,15 @@ def _check_github_update(repo: str) -> Optional[UpdateInfo]:
         return None
 
     local_version = _read_local_version()
-    remote_version = ""
-    detail = ""
 
+    # 优先 raw（不占 GitHub API 配额，避免 zip 用户被 403 限流误判为已是最新）
+    remote_version = _fetch_remote_version_via_raw(repo)
+    if remote_version:
+        if version_lt(local_version, remote_version):
+            return UpdateInfo(True, local_version, remote_version, "github")
+        return UpdateInfo(False, local_version, remote_version, "github")
+
+    detail = ""
     try:
         data = _http_get_json(f"https://api.github.com/repos/{repo}/releases/latest")
         if data.get("message"):
@@ -196,14 +202,7 @@ def _check_github_update(repo: str) -> Optional[UpdateInfo]:
         detail = str(e)
 
     if not remote_version:
-        raw_version = _fetch_remote_version_via_raw(repo)
-        if raw_version:
-            remote_version = raw_version
-        elif detail:
-            return UpdateInfo(False, local_version, "未知", "github", detail)
-
-    if not remote_version:
-        return UpdateInfo(False, local_version, "未知", "github", "无法获取远程版本")
+        return UpdateInfo(False, local_version, "未知", "github", detail or "无法获取远程版本")
 
     if version_lt(local_version, remote_version):
         return UpdateInfo(True, local_version, remote_version, "github")
