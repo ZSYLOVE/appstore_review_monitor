@@ -59,6 +59,26 @@ def _http_get_json(url: str, timeout: int = 15) -> dict:
         return json.loads(resp.read().decode("utf-8"))
 
 
+def _http_get_text(url: str, timeout: int = 15) -> str:
+    req = Request(url, headers={"User-Agent": "AppStoreMonitor-Updater"})
+    with urlopen(req, timeout=timeout) as resp:
+        return resp.read().decode("utf-8")
+
+
+def _fetch_remote_version_via_raw(repo: str) -> str:
+    """从 raw.githubusercontent.com 读取远程 __init__.py，不消耗 GitHub API 配额。"""
+    repo = repo.strip().strip("/")
+    for branch in ("main", "master"):
+        url = f"https://raw.githubusercontent.com/{repo}/{branch}/__init__.py"
+        try:
+            version = _parse_version_from_init(_http_get_text(url))
+            if version:
+                return version
+        except URLError:
+            continue
+    return ""
+
+
 def _git_available() -> bool:
     return bool(shutil.which("git")) and os.path.isdir(os.path.join(PACKAGE_DIR, ".git"))
 
@@ -159,17 +179,35 @@ def _check_github_update(repo: str) -> Optional[UpdateInfo]:
     repo = repo.strip().strip("/")
     if not repo or "/" not in repo:
         return None
+
+    local_version = _read_local_version()
+    remote_version = ""
+    detail = ""
+
     try:
         data = _http_get_json(f"https://api.github.com/repos/{repo}/releases/latest")
+        if data.get("message"):
+            detail = str(data.get("message", ""))
+        else:
+            tag = (data.get("tag_name") or data.get("name") or "").lstrip("vV")
+            if tag:
+                remote_version = tag
     except URLError as e:
-        return UpdateInfo(False, __version__, __version__, "github", str(e))
+        detail = str(e)
 
-    tag = (data.get("tag_name") or data.get("name") or "").lstrip("vV")
-    if not tag:
-        return UpdateInfo(False, __version__, __version__, "github", "Release 无版本号")
-    if version_lt(__version__, tag):
-        return UpdateInfo(True, __version__, tag, "github")
-    return UpdateInfo(False, __version__, tag, "github")
+    if not remote_version:
+        raw_version = _fetch_remote_version_via_raw(repo)
+        if raw_version:
+            remote_version = raw_version
+        elif detail:
+            return UpdateInfo(False, local_version, "未知", "github", detail)
+
+    if not remote_version:
+        return UpdateInfo(False, local_version, "未知", "github", "无法获取远程版本")
+
+    if version_lt(local_version, remote_version):
+        return UpdateInfo(True, local_version, remote_version, "github")
+    return UpdateInfo(False, local_version, remote_version, "github")
 
 
 def _check_gitee_update(repo: str) -> Optional[UpdateInfo]:
@@ -330,6 +368,10 @@ def print_update_status(info: UpdateInfo) -> None:
         print(f"  详情     : {info.detail}")
     if info.available:
         print("  状态     : ✅ 有新版本可更新")
+    elif info.remote_version == "未知" or (
+        info.detail and ("error" in info.detail.lower() or "limit" in info.detail.lower() or "失败" in info.detail)
+    ):
+        print("  状态     : ⚠️ 版本检查失败（网络或 GitHub 限流）")
     else:
         print("  状态     : 已是最新")
 
