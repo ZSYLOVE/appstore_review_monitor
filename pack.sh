@@ -21,6 +21,7 @@ zip -r "$OUT" "$NAME" \
   -x "$NAME/.update_backup/*" \
   -x "$NAME/__pycache__/*" \
   -x "$NAME/**/__pycache__/*" \
+  -x "$NAME/*.sh" \
   -x "$NAME/.DS_Store" \
   -x "$NAME/**/.DS_Store" \
   -x "$NAME/.monitor.lock" \
