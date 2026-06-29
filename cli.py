@@ -6,7 +6,7 @@ import sys
 from . import __version__
 from .auth import clear_secret_caches
 from .config import load_config, merge_apps_from_json, normalize_json_path, save_config
-from .constants import CONFIG_FILE, DEFAULT_PROXY_PORT
+from .constants import CONFIG_FILE, DEFAULT_PROXY_PORT, DEFAULT_UPDATE_REPO
 from .fingerprint import generate_run_fingerprint
 from .monitor import run_monitor_loop
 from .security import print_security_status
@@ -123,9 +123,13 @@ def main():
     print("=========================================")
     print("🚀 App Store 自动化审核监控与通知助手 (多应用版)")
     print("=========================================")
-    print(f"   版本 v{__version__}\n")
 
     config = load_config(config_path)
+    update_repo = (config.get("UPDATE_REPO") or DEFAULT_UPDATE_REPO).strip()
+    print(f"   版本 v{__version__}")
+    print(f"   更新源 https://github.com/{update_repo}")
+    print()
+
     apps = config.get("APPS", [])
 
     if args.import_json:
@@ -161,6 +165,7 @@ def main():
                 "DEFAULT_FEISHU": config.get("DEFAULT_FEISHU", ""),
                 "AUTO_REMOVE_ON_APPROVE": config.get("AUTO_REMOVE_ON_APPROVE", False),
                 "STRICT_PROXY": config.get("STRICT_PROXY", False),
+                "UPDATE_REPO": config.get("UPDATE_REPO", DEFAULT_UPDATE_REPO),
             }
             apps = []
         elif drag_input and os.path.exists(drag_input) and drag_input.endswith(".json"):

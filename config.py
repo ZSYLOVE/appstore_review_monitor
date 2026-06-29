@@ -12,6 +12,7 @@ from .constants import (
     CHECK_INTERVAL_RANDOM_MIN,
     CONFIG_FILE,
     DEFAULT_PROXY_PORT,
+    DEFAULT_UPDATE_REPO,
     DIR_MODE_PRIVATE,
     FILE_MODE_PRIVATE,
 )
@@ -50,6 +51,7 @@ def apply_config_defaults(config: dict) -> dict:
             "REMOVED_APPS": [],
             "AUTO_REMOVE_ON_APPROVE": False,
             "STRICT_PROXY": False,
+            "UPDATE_REPO": DEFAULT_UPDATE_REPO,
         }
     if "AUTO_REMOVE_ON_APPROVE" not in config:
         config["AUTO_REMOVE_ON_APPROVE"] = False
@@ -64,6 +66,9 @@ def apply_config_defaults(config: dict) -> dict:
         config["STRICT_PROXY"] = env_strict in ("1", "true", "yes", "on")
     if "COMPACT_OUTPUT" not in config:
         config["COMPACT_OUTPUT"] = False
+    if "UPDATE_REPO" not in config or not str(config.get("UPDATE_REPO", "")).strip():
+        env_repo = os.environ.get("APPSTORE_MONITOR_UPDATE_REPO", "").strip()
+        config["UPDATE_REPO"] = env_repo or DEFAULT_UPDATE_REPO
     return config
 
 

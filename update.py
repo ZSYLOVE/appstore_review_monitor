@@ -11,7 +11,7 @@ from urllib.error import URLError
 from urllib.request import Request, urlopen
 
 from . import __version__
-from .constants import APP_DATA_DIR, CONFIG_FILE, PACKAGE_DIR
+from .constants import APP_DATA_DIR, CONFIG_FILE, DEFAULT_UPDATE_REPO, PACKAGE_DIR
 
 
 class UpdateInfo(NamedTuple):
@@ -41,14 +41,16 @@ def _read_update_repo() -> str:
     env_repo = os.environ.get("APPSTORE_MONITOR_UPDATE_REPO", "").strip()
     if env_repo:
         return env_repo
-    if not os.path.exists(CONFIG_FILE):
-        return ""
-    try:
-        with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        return (data.get("UPDATE_REPO") or "").strip()
-    except Exception:
-        return ""
+    if os.path.exists(CONFIG_FILE):
+        try:
+            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            repo = (data.get("UPDATE_REPO") or "").strip()
+            if repo:
+                return repo
+        except Exception:
+            pass
+    return DEFAULT_UPDATE_REPO
 
 
 def _http_get_json(url: str, timeout: int = 15) -> dict:
@@ -293,9 +295,6 @@ def maybe_handle_update(args) -> bool:
     """处理 --update / --check-update / 启动时交互更新。返回 True 表示应退出 main。"""
     interactive = not args.daemon and not getattr(args, "check_once", False)
 
-    if getattr(args, "skip_update", False):
-        return False
-
     if getattr(args, "check_update", False):
         info = check_for_update()
         print("\n📦 版本检查")
@@ -316,6 +315,9 @@ def maybe_handle_update(args) -> bool:
             restart_script()
         print(f"❌ {msg}")
         return True
+
+    if getattr(args, "skip_update", False):
+        return False
 
     info = check_for_update()
     if not info.available:
