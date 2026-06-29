@@ -9,7 +9,7 @@ DEFAULT_PROXY_PORT = 7897
 TOKEN_TTL_SECONDS = 600
 TOKEN_REFRESH_MARGIN = 60
 
-# GitHub 更新源（zip 分发同事自动 --update）；环境变量 APPSTORE_MONITOR_UPDATE_REPO 可覆盖
+# GitHub 更新源（zip 用户走 Release/raw；git 用户走 pull）；环境变量 APPSTORE_MONITOR_UPDATE_REPO 可覆盖
 DEFAULT_UPDATE_REPO = "ZSYLOVE/appstore_review_monitor"
 
 # 新应用默认随机轮询区间（秒）；可在添加时手动覆盖
