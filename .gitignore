@@ -1,0 +1,7 @@
+app_data/
+.update_backup/
+__pycache__/
+*.pyc
+.DS_Store
+*.pyo
+.monitor.lock
