@@ -5,6 +5,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import zipfile
 from typing import NamedTuple, Optional
 from urllib.error import URLError
@@ -65,18 +66,72 @@ def _http_get_text(url: str, timeout: int = 15) -> str:
         return resp.read().decode("utf-8")
 
 
-def _fetch_remote_version_via_raw(repo: str) -> str:
-    """从 raw.githubusercontent.com 读取远程 __init__.py，不消耗 GitHub API 配额。"""
+def _fetch_latest_remote_tag(repo: str) -> str:
+    """通过 git ls-remote 获取最新 tag（无需本地 .git，不走 GitHub API）。"""
+    if not shutil.which("git"):
+        return ""
     repo = repo.strip().strip("/")
+    try:
+        result = subprocess.run(
+            ["git", "ls-remote", "--tags", f"https://github.com/{repo}.git"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        if result.returncode != 0:
+            return ""
+        best = ""
+        for line in result.stdout.splitlines():
+            parts = line.split("\t")
+            if len(parts) < 2:
+                continue
+            ref = parts[1].strip()
+            if not ref.startswith("refs/tags/v"):
+                continue
+            tag = ref.rsplit("/", 1)[-1].lstrip("vV")
+            if not best or version_lt(best, tag):
+                best = tag
+        return best
+    except Exception:
+        return ""
+
+
+def _fetch_init_version_from_raw(repo: str, ref: str) -> str:
+    bust = int(time.time())
+    url = f"https://raw.githubusercontent.com/{repo.strip().strip('/')}/{ref}/__init__.py?_={bust}"
+    try:
+        return _parse_version_from_init(_http_get_text(url))
+    except URLError:
+        return ""
+
+
+def _fetch_remote_version_via_raw(repo: str) -> str:
+    """从 raw.githubusercontent.com 读取远程版本，并对比最新 tag（绕过 main 分支 CDN 缓存延迟）。"""
+    repo = repo.strip().strip("/")
+    candidates = []
+
     for branch in ("main", "master"):
-        url = f"https://raw.githubusercontent.com/{repo}/{branch}/__init__.py"
-        try:
-            version = _parse_version_from_init(_http_get_text(url))
-            if version:
-                return version
-        except URLError:
-            continue
-    return ""
+        version = _fetch_init_version_from_raw(repo, branch)
+        if version:
+            candidates.append(version)
+            break
+
+    latest_tag = _fetch_latest_remote_tag(repo)
+    if latest_tag:
+        tag_version = _fetch_init_version_from_raw(repo, f"v{latest_tag}")
+        if tag_version:
+            candidates.append(tag_version)
+        else:
+            candidates.append(latest_tag)
+
+    if not candidates:
+        return ""
+    best = candidates[0]
+    for version in candidates[1:]:
+        if version_lt(best, version):
+            best = version
+    return best
 
 
 def _git_available() -> bool:
