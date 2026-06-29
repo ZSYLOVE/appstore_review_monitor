@@ -74,42 +74,85 @@ def _git_run(args, *, timeout: int = 90) -> subprocess.CompletedProcess:
     )
 
 
+def _parse_version_from_init(content: str) -> str:
+    match = re.search(r'__version__\s*=\s*["\']([^"\']+)["\']', content)
+    return match.group(1) if match else ""
+
+
+def _read_local_version() -> str:
+    init_path = os.path.join(PACKAGE_DIR, "__init__.py")
+    try:
+        with open(init_path, "r", encoding="utf-8") as f:
+            version = _parse_version_from_init(f.read())
+            if version:
+                return version
+    except Exception:
+        pass
+    return __version__
+
+
+def _read_remote_init_version() -> str:
+    for ref in ("origin/HEAD:__init__.py", "origin/main:__init__.py"):
+        result = _git_run(["show", ref], timeout=20)
+        if result.returncode == 0:
+            version = _parse_version_from_init(result.stdout)
+            if version:
+                return version
+    return ""
+
+
+def _commits_behind_upstream() -> Optional[int]:
+    behind = _git_run(["rev-list", "--count", "HEAD..@{u}"])
+    if behind.returncode == 0 and behind.stdout.strip().isdigit():
+        return int(behind.stdout.strip())
+    return None
+
+
+def _latest_git_tag() -> str:
+    tag_result = _git_run(["tag", "-l", "--sort=-v:refname"])
+    if tag_result.returncode != 0:
+        return ""
+    for line in tag_result.stdout.splitlines():
+        tag = line.strip()
+        if tag:
+            return tag.lstrip("vV")
+    return ""
+
+
 def _check_git_update() -> Optional[UpdateInfo]:
     if not _git_available():
         return None
 
+    local_version = _read_local_version()
+
     fetch = _git_run(["fetch", "--tags", "--quiet"], timeout=120)
     if fetch.returncode != 0:
-        return UpdateInfo(False, __version__, __version__, "git", fetch.stderr.strip() or "git fetch 失败")
+        return UpdateInfo(False, local_version, local_version, "git", fetch.stderr.strip() or "git fetch 失败")
 
-    tag_result = _git_run(["tag", "-l", "--sort=-v:refname"])
-    latest_tag = ""
-    if tag_result.returncode == 0:
-        for line in tag_result.stdout.splitlines():
-            tag = line.strip()
-            if tag:
-                latest_tag = tag.lstrip("vV")
-                break
+    remote_init_version = _read_remote_init_version()
+    commits_behind = _commits_behind_upstream()
 
-    remote_version = latest_tag
+    # 已与远程同步：以 __init__.py 为准，避免 tag 与代码版本不一致导致重复更新
+    if commits_behind is not None:
+        if commits_behind == 0:
+            remote_version = remote_init_version or local_version
+            return UpdateInfo(False, local_version, remote_version, "git")
+        remote_version = remote_init_version or _latest_git_tag() or "最新提交"
+        return UpdateInfo(
+            True,
+            local_version,
+            remote_version,
+            "git",
+            f"本地分支落后远程 {commits_behind} 个提交",
+        )
+
+    remote_version = remote_init_version or _latest_git_tag()
     if not remote_version:
-        remote_show = _git_run(["show", "origin/HEAD:__init__.py"], timeout=20)
-        if remote_show.returncode != 0:
-            remote_show = _git_run(["show", "origin/main:__init__.py"], timeout=20)
-        if remote_show.returncode == 0:
-            match = re.search(r'__version__\s*=\s*["\']([^"\']+)["\']', remote_show.stdout)
-            if match:
-                remote_version = match.group(1)
+        return UpdateInfo(False, local_version, local_version, "git", "无法获取远程版本")
 
-    if not remote_version:
-        behind = _git_run(["rev-list", "--count", "HEAD..@{u}"])
-        if behind.returncode == 0 and behind.stdout.strip().isdigit() and int(behind.stdout.strip()) > 0:
-            return UpdateInfo(True, __version__, "最新提交", "git", "本地分支落后远程")
-        return UpdateInfo(False, __version__, __version__, "git", "无法获取远程版本")
-
-    if version_lt(__version__, remote_version):
-        return UpdateInfo(True, __version__, remote_version, "git")
-    return UpdateInfo(False, __version__, remote_version, "git")
+    if version_lt(local_version, remote_version):
+        return UpdateInfo(True, local_version, remote_version, "git")
+    return UpdateInfo(False, local_version, remote_version, "git")
 
 
 def _check_github_update(repo: str) -> Optional[UpdateInfo]:
