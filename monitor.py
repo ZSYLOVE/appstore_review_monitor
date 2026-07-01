@@ -174,6 +174,9 @@ def _ensure_app_state(app_id, app, source, app_states):
     if source == "APPROVED_APPS":
         initial_state = app.get("APPROVED_STATE")
         initial_version = app.get("APPROVED_VERSION")
+    else:
+        initial_state = app.get("LAST_STORE_STATE")
+        initial_version = app.get("LAST_VERSION_STRING")
     app_states[app_id] = {
         "last_state": initial_state,
         "last_version": initial_version,
@@ -258,8 +261,8 @@ def run_monitor_loop(
             for app, source in monitor_targets:
                 app_id = app["APP_ID"]
                 state = _ensure_app_state(app_id, app, source, app_states)
-                pushplus_token = app.get("PUSHPLUS_TOKEN", "")
-                feishu_webhook = app.get("FEISHU_WEBHOOK", "")
+                pushplus_token = app.get("PUSHPLUS_TOKEN") or config.get("DEFAULT_PUSHPLUS", "")
+                feishu_webhook = app.get("FEISHU_WEBHOOK") or config.get("DEFAULT_FEISHU", "")
                 app_name = app.get("APP_NAME", f"App({app_id})")
                 header_printed = False
                 need_app_name = is_placeholder_app_name(app_name, app_id)
@@ -439,6 +442,13 @@ def run_monitor_loop(
 
                         state["last_state"] = app_store_state
                         state["last_version"] = version_string
+                        if (
+                            app.get("LAST_STORE_STATE") != app_store_state
+                            or app.get("LAST_VERSION_STRING") != version_string
+                        ):
+                            app["LAST_STORE_STATE"] = app_store_state
+                            app["LAST_VERSION_STRING"] = version_string
+                            config_dirty = True
 
                         if app_store_state == "IN_REVIEW":
                             state["next_sleep_time"] = int(app.get("REVIEW_INTERVAL", 180))

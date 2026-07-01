@@ -79,12 +79,22 @@ def send_feishu(webhook_url, title, content):
 
     try:
         res = get_aux_session().post(webhook_url, json=data, timeout=10)
-        if res.status_code == 200 and res.json().get("code") == 0:
+        if res.status_code == 200 and _feishu_send_ok(res):
             monitor_print("✅ 飞书推送成功！请查看您的飞书群。")
         else:
             monitor_print(f"⚠️ 飞书推送失败: {res.text}")
     except Exception as e:
         monitor_print(f"⚠️ 网络原因导致飞书推送失败: {e}")
+
+
+def _feishu_send_ok(response) -> bool:
+    try:
+        body = response.json()
+    except Exception:
+        return response.status_code == 200
+    if body.get("code") == 0 or body.get("StatusCode") == 0:
+        return True
+    return body.get("msg") == "success" or body.get("StatusMessage") == "success"
 
 
 def notify_status_change(app_id, app_name, old_state, new_state, pushplus_token, feishu_webhook):
@@ -96,6 +106,8 @@ def notify_status_change(app_id, app_name, old_state, new_state, pushplus_token,
         f"<h3>🔄 状态更新</h3><p>您的 App <b>【{app_name}】</b>(ID: {app_id}) 状态发生了变化：</p>"
         f"<p>从 <b>{old_state}</b><br>变更为 👉 <b style='color:#007AFF'>{new_state}</b></p>"
     )
+    if not pushplus_token and not feishu_webhook:
+        monitor_print("  ⚠️ 未配置 PushPlus / 飞书，仅显示系统通知。按 E 修改推送配置。")
     if pushplus_token:
         send_pushplus(pushplus_token, title, content)
     if feishu_webhook:
