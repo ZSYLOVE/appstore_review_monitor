@@ -32,7 +32,7 @@ from .notify import (
     notify_version_change,
 )
 from .session import apple_headers, get_with_backoff, jitter, sleep_backoff
-from .setup_apps import interactive_add_apps, interactive_edit_apps
+from .setup_apps import interactive_add_apps, interactive_edit_apps, interactive_remove_apps
 from .ui import countdown_sleep, log_event, print_app_status_lists, print_unchanged_status_line
 
 
@@ -204,6 +204,8 @@ def run_monitor_loop(
             interactive_add_apps(config, apps, config_path)
         elif interactive and pending_interactive == "edit":
             interactive_edit_apps(config, apps, config_path)
+        elif interactive and pending_interactive == "remove":
+            interactive_remove_apps(config, apps, config_path)
         pending_interactive = None
 
         if not config.get("APPS") and not config.get("APPROVED_APPS"):
@@ -212,7 +214,7 @@ def run_monitor_loop(
 
         print("\n✅ 配置读取完毕，开始进入多应用 24 小时监控模式...")
         if interactive:
-            print("💡 倒计时期间按 R+回车 添加应用，E+回车 修改应用配置。")
+            print("💡 倒计时期间按 R+回车 添加应用，E+回车 修改应用配置，D+回车 移除应用。")
         if config.get("APPROVED_APPS"):
             print("💡 已过审应用已从待监控列表移出，后台静默监控（下架或新版本时才会通知）。")
 
@@ -575,6 +577,11 @@ def run_monitor_loop(
             if cmd == "E":
                 print("\n🔄 [用户打断] 您按下了 E 键。即将进入修改应用配置模式...")
                 pending_interactive = "edit"
+                interrupted = True
+                break
+            if cmd == "D":
+                print("\n🔄 [用户打断] 您按下了 D 键。即将进入移除应用模式...")
+                pending_interactive = "remove"
                 interrupted = True
                 break
 

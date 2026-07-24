@@ -118,19 +118,28 @@ def merge_apps_from_json(json_path: str, apps: list, config: dict = None) -> int
 
     added_count = 0
     existing_ids = {a.get("APP_ID") for a in apps}
-    removed_ids = set()
+    removed_apps = {}
     approved_ids = set()
     if config:
-        removed_ids = {a.get("APP_ID") for a in config.get("REMOVED_APPS", [])}
+        removed_apps = {
+            a.get("APP_ID"): a for a in config.get("REMOVED_APPS", []) if a.get("APP_ID")
+        }
         approved_ids = {a.get("APP_ID") for a in config.get("APPROVED_APPS", [])}
     base_dir = os.path.dirname(json_path)
     for new_app in apps_to_add:
         app_id = new_app.get("APP_ID")
         if not app_id or app_id in existing_ids:
             continue
-        if app_id in removed_ids:
-            print(f"⚠️ 应用 {app_id} 已在「已下架」列表，跳过（下架为终态，不会重新监控）。")
-            continue
+        removed_app = removed_apps.get(app_id)
+        if removed_app:
+            if removed_app.get("REMOVED_REASON") == "manual":
+                config["REMOVED_APPS"] = [
+                    a for a in config.get("REMOVED_APPS", []) if a.get("APP_ID") != app_id
+                ]
+                print(f"♻️ 应用 {app_id} 曾被手动移除，已恢复到监控列表。")
+            else:
+                print(f"⚠️ 应用 {app_id} 已在「已下架」列表，跳过（下架为终态，不会重新监控）。")
+                continue
         if app_id in approved_ids:
             print(f"⚠️ 应用 {app_id} 已在「已过审」列表并持续监控，跳过重复添加。")
             continue
@@ -168,6 +177,26 @@ def archive_removed_app(config: dict, app: dict, version_string: str, app_store_
     config["REMOVED_APPS"] = removed
     config["APPROVED_APPS"] = [
         a for a in config.get("APPROVED_APPS", []) if a.get("APP_ID") != app.get("APP_ID")
+    ]
+
+
+def archive_manually_removed_app(config: dict, app: dict) -> None:
+    """手动从监控中移除应用；只改配置，不删除密钥、日志和缓存目录。"""
+    app_id = app.get("APP_ID")
+    archived = dict(app)
+    archived["REMOVED_AT"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    archived["REMOVED_REASON"] = "manual"
+    archived["REMOVED_STATE"] = app.get("LAST_STORE_STATE", app.get("APPROVED_STATE", "MANUAL"))
+    if app.get("LAST_VERSION_STRING"):
+        archived["REMOVED_VERSION"] = app.get("LAST_VERSION_STRING")
+    elif app.get("APPROVED_VERSION"):
+        archived["REMOVED_VERSION"] = app.get("APPROVED_VERSION")
+    removed = [a for a in config.get("REMOVED_APPS", []) if a.get("APP_ID") != app_id]
+    removed.append(archived)
+    config["REMOVED_APPS"] = removed
+    config["APPS"] = [a for a in config.get("APPS", []) if a.get("APP_ID") != app_id]
+    config["APPROVED_APPS"] = [
+        a for a in config.get("APPROVED_APPS", []) if a.get("APP_ID") != app_id
     ]
 
 

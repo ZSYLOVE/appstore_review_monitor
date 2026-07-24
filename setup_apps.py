@@ -4,6 +4,7 @@ from typing import Dict, List, Optional, Tuple
 from .api import fetch_app_name_sync
 from .auth import clear_secret_caches
 from .config import (
+    archive_manually_removed_app,
     app_config_lists,
     format_interval_minutes,
     is_placeholder_app_name,
@@ -25,15 +26,20 @@ def _collect_editable_apps(config: dict) -> List[Tuple[str, dict]]:
 
 
 def _find_editable_app(config: dict, selector: str) -> Optional[dict]:
+    entry = _find_editable_entry(config, selector)
+    return entry[1] if entry else None
+
+
+def _find_editable_entry(config: dict, selector: str) -> Optional[Tuple[str, dict]]:
     editable = _collect_editable_apps(config)
     if selector.isdigit():
         idx = int(selector) - 1
         if 0 <= idx < len(editable):
-            return editable[idx][1]
+            return editable[idx]
         return None
-    for _, app in editable:
+    for tag, app in editable:
         if app.get("APP_ID") == selector:
-            return app
+            return tag, app
     return None
 
 
@@ -173,6 +179,64 @@ def interactive_edit_apps(config, apps, config_path: str = None):
             return
 
 
+def remove_app_from_monitoring(
+    config: dict,
+    selector: str,
+    config_path: str = None,
+    *,
+    confirm: bool = True,
+) -> bool:
+    entry = _find_editable_entry(config, selector.strip())
+    if not entry:
+        print("⚠️ 未找到该应用。")
+        return False
+
+    tag, target = entry
+    app_id = target.get("APP_ID", "")
+    app_name = target.get("APP_NAME", f"App({app_id})")
+    print(f"\n🗑️ 准备移除监控: [{tag}] {app_name} (ID: {app_id})")
+    print("   只会从监控配置移除，不会删除 .p8 密钥、历史日志和本地缓存目录。")
+    if confirm:
+        answer = input("👉 确认移除？输入 Y 继续: ").strip().upper()
+        if answer != "Y":
+            print("ℹ️ 已取消移除。")
+            return False
+
+    archive_manually_removed_app(config, target)
+    if save_config(config, config_path, refresh_names=False):
+        clear_secret_caches()
+        print("✅ 已从监控列表移除，并归档到「已移除/下架」。")
+        return True
+    print("❌ 移除后保存配置失败，请检查文件写入权限。")
+    return False
+
+
+def interactive_remove_apps(config, apps, config_path: str = None):
+    while True:
+        removable = _collect_editable_apps(config)
+        if not removable:
+            print("⚠️ 没有可移除的应用。")
+            return
+
+        print_app_status_lists(config)
+        print("\n🗑️ 移除监控应用")
+        for i, (tag, app) in enumerate(removable, 1):
+            name = app.get("APP_NAME", f"App({app.get('APP_ID')})")
+            print(f"  {i}. [{tag}] {name} (ID: {app.get('APP_ID')})")
+
+        sel = input("\n👉 输入序号或 App ID 进行移除，直接回车返回监控: ").strip()
+        if not sel:
+            print("\n🏃‍♂️ 返回监控...")
+            return
+
+        if remove_app_from_monitoring(config, sel, config_path):
+            apps[:] = config.get("APPS", [])
+
+        if input("👉 继续移除其他应用? (y/N): ").strip().upper() != "Y":
+            print("\n🏃‍♂️ 返回监控...")
+            return
+
+
 def interactive_add_apps(config, apps, config_path: str = None):
     while True:
         if len(apps) > 0 or config.get("APPROVED_APPS"):
@@ -192,13 +256,16 @@ def interactive_add_apps(config, apps, config_path: str = None):
             print("\n💡 提示：你可以直接【拖拽】之前归档的 .json 配置文件到这里，免去手动输入。")
             app_id_input = input(
                 "👉 请输入待监控的新 App ID (或拖拽 .json 文件)，"
-                "M 修改推送，E 修改应用配置，直接回车开始监控: "
+                "M 修改推送，E 修改应用配置，D 移除应用，直接回车开始监控: "
             ).strip()
             if not app_id_input:
                 print("\n🏃‍♂️ 退出添加模式，即将开始监控...")
                 break
             if app_id_input.upper() == "E":
                 interactive_edit_apps(config, apps, config_path)
+                continue
+            if app_id_input.upper() == "D":
+                interactive_remove_apps(config, apps, config_path)
                 continue
             if app_id_input.upper() == "M":
                 print("\n🔧 修改推送配置：")
@@ -219,13 +286,16 @@ def interactive_add_apps(config, apps, config_path: str = None):
             print("\n--- ➕ 添加新监控应用 ---")
             print("💡 提示：你可以直接【拖拽】之前归档的 .json 配置文件到这里，免去手动输入。")
             app_id_input = input(
-                "👉 请输入待监控的 App ID (或拖拽 .json 文件)，M 修改推送，E 修改应用配置: "
+                "👉 请输入待监控的 App ID (或拖拽 .json 文件)，M 修改推送，E 修改应用配置，D 移除应用: "
             ).strip()
             if not app_id_input:
                 print("⚠️ App ID 不能为空！")
                 continue
             if app_id_input.upper() == "E":
                 interactive_edit_apps(config, apps, config_path)
+                continue
+            if app_id_input.upper() == "D":
+                interactive_remove_apps(config, apps, config_path)
                 continue
             if app_id_input.upper() == "M":
                 print("\n🔧 修改推送配置：")
@@ -269,8 +339,18 @@ def interactive_add_apps(config, apps, config_path: str = None):
             continue
 
         if "REMOVED_APPS" in app_config_lists(config, app_id):
-            print("⚠️ 该应用已在「已下架」列表中。下架为终态，不会重新上架，无需再监控。")
-            continue
+            removed_app = next(
+                (a for a in config.get("REMOVED_APPS", []) if a.get("APP_ID") == app_id),
+                None,
+            )
+            if removed_app and removed_app.get("REMOVED_REASON") == "manual":
+                config["REMOVED_APPS"] = [
+                    a for a in config.get("REMOVED_APPS", []) if a.get("APP_ID") != app_id
+                ]
+                print("♻️ 该应用曾被手动移除，本次将重新加入监控。")
+            else:
+                print("⚠️ 该应用已在「已下架」列表中。下架为终态，不会重新上架，无需再监控。")
+                continue
         if "APPROVED_APPS" in app_config_lists(config, app_id):
             print("⚠️ 该应用已在「已过审」列表中，正在持续监控。")
             continue

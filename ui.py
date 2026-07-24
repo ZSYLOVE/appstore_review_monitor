@@ -46,15 +46,16 @@ def print_app_status_lists(config: dict) -> None:
             print(f"     {i}. {name}{ver_str} (ID: {app.get('APP_ID')}){time_str}")
     else:
         print("     （暂无）")
-    print(f"  ❌ 已下架 ({len(removed)} 个，仅记录不再监控):")
+    print(f"  ❌ 已移除/下架 ({len(removed)} 个，仅记录不再监控):")
     if removed:
         for i, app in enumerate(removed, 1):
             name = app.get("APP_NAME", f"App({app.get('APP_ID')})")
             ver = app.get("REMOVED_VERSION", "")
             at = app.get("REMOVED_AT", "")
+            reason = "手动移除" if app.get("REMOVED_REASON") == "manual" else "已下架"
             ver_str = f" v{ver}" if ver else ""
             time_str = f" · {at}" if at else ""
-            print(f"     {i}. {name}{ver_str} (ID: {app.get('APP_ID')}){time_str}")
+            print(f"     {i}. [{reason}] {name}{ver_str} (ID: {app.get('APP_ID')}){time_str}")
     else:
         print("     （暂无）")
 
@@ -91,13 +92,13 @@ def countdown_sleep(seconds, round_no: int = 0, interactive: bool = True):
             tag = f"已轮询{round_no}轮 · " if round_no > 0 else ""
             sys.stdout.write(
                 f"\r\033[K{tag}⏳ 距离下次查询还剩: {remaining // 60:02d}分 {remaining % 60:02d}秒 "
-                f"[R 添加] [E 修改]... "
+                f"[R 添加] [E 修改] [D 移除]... "
             )
             sys.stdout.flush()
             i, o, e = select.select([sys.stdin], [], [], 1)
             if i:
                 user_input = sys.stdin.readline().strip().upper()
-                if user_input in ("R", "E"):
+                if user_input in ("R", "E", "D"):
                     sys.stdout.write("\r\033[K")
                     print("\n")
                     return user_input

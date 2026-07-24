@@ -12,6 +12,7 @@ from .launcher import ensure_launchers
 from .monitor import run_monitor_loop
 from .security import print_security_status
 from .session import configure_session, validate_apple_connectivity
+from .setup_apps import interactive_remove_apps, remove_app_from_monitoring
 from .update import maybe_handle_update
 
 atexit.register(clear_secret_caches)
@@ -65,6 +66,14 @@ def parse_cli_args():
         "--skip-update",
         action="store_true",
         help="跳过启动时的版本检查",
+    )
+    parser.add_argument(
+        "--remove-app",
+        "--remove",
+        nargs="?",
+        const="",
+        default=None,
+        help="移除监控应用；可传 App ID，不传则进入交互选择",
     )
     return parser.parse_args()
 
@@ -133,6 +142,14 @@ def main():
     print()
 
     apps = config.get("APPS", [])
+
+    if args.remove_app is not None:
+        selector = str(args.remove_app).strip()
+        if selector:
+            ok = remove_app_from_monitoring(config, selector, config_path, confirm=True)
+            sys.exit(0 if ok else 1)
+        interactive_remove_apps(config, apps, config_path)
+        return
 
     if args.import_json:
         import_path = normalize_json_path(args.import_json)
