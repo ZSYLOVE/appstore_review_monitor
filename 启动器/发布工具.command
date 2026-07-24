@@ -1,11 +1,12 @@
 #!/bin/bash
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-PUBLISH_SCRIPT="${SCRIPT_DIR}/publish.sh"
+LAUNCHER_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_DIR="$(dirname "$LAUNCHER_DIR")"
+PUBLISH_SCRIPT="$PROJECT_DIR/publish.sh"
 
-echo "App Store Review Monitor 发布工具"
-echo "项目目录: ${SCRIPT_DIR}"
+echo "App Store Review Monitor - 发布工具"
+echo "项目目录: $PROJECT_DIR"
 echo
 echo "将自动执行:"
 echo "  1. 当前版本最后一段按十进制 +1"
@@ -24,7 +25,7 @@ if [[ ! -x "$PUBLISH_SCRIPT" ]]; then
   exit 1
 fi
 
-cd "$SCRIPT_DIR"
+cd "$PROJECT_DIR"
 "$PUBLISH_SCRIPT" --install-gh
 
 echo

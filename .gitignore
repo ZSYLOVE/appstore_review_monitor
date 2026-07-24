@@ -5,3 +5,9 @@ __pycache__/
 .DS_Store
 *.pyo
 .monitor.lock
+
+# Local release/package scripts; keep on this machine, do not publish to Git.
+pack.sh
+release.sh
+publish.sh
+publish.command
