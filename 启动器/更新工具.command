@@ -13,3 +13,4 @@ caffeinate -i -s python3 check_app_status.py --update
 
 echo
 read -r -p "更新流程结束。按回车关闭窗口..."
+

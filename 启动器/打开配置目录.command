@@ -15,3 +15,4 @@ open "$APP_DATA_DIR"
 echo "已在 Finder 中打开配置目录。"
 echo
 read -r -p "按回车关闭窗口..."
+

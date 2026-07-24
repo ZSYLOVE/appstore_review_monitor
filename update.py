@@ -307,6 +307,8 @@ def _list_updatable_files(root: str) -> list:
         path = os.path.join(root, name)
         if os.path.isfile(path) and name.endswith(".py"):
             files.append(name)
+        elif os.path.isdir(path) and name == "启动器":
+            files.append(name)
     return files
 
 
@@ -317,13 +319,27 @@ def _backup_code_files() -> str:
     target = os.path.join(backup_dir, stamp)
     os.makedirs(target, exist_ok=True)
     for name in _list_updatable_files(PACKAGE_DIR):
-        shutil.copy2(os.path.join(PACKAGE_DIR, name), os.path.join(target, name))
+        src = os.path.join(PACKAGE_DIR, name)
+        dst = os.path.join(target, name)
+        if os.path.isdir(src):
+            if os.path.exists(dst):
+                shutil.rmtree(dst)
+            shutil.copytree(src, dst)
+        else:
+            shutil.copy2(src, dst)
     return target
 
 
 def _restore_backup(backup_dir: str) -> None:
     for name in _list_updatable_files(backup_dir):
-        shutil.copy2(os.path.join(backup_dir, name), os.path.join(PACKAGE_DIR, name))
+        src = os.path.join(backup_dir, name)
+        dst = os.path.join(PACKAGE_DIR, name)
+        if os.path.isdir(src):
+            if os.path.exists(dst):
+                shutil.rmtree(dst)
+            shutil.copytree(src, dst)
+        else:
+            shutil.copy2(src, dst)
 
 
 def _apply_git_update() -> tuple:
@@ -387,7 +403,12 @@ def _apply_release_update(info: UpdateInfo) -> tuple:
             for name in _list_updatable_files(inner_root):
                 src = os.path.join(inner_root, name)
                 dst = os.path.join(PACKAGE_DIR, name)
-                shutil.copy2(src, dst)
+                if os.path.isdir(src):
+                    if os.path.exists(dst):
+                        shutil.rmtree(dst)
+                    shutil.copytree(src, dst)
+                else:
+                    shutil.copy2(src, dst)
         return True, f"已更新至 v{info.remote_version}"
     except Exception as e:
         try:

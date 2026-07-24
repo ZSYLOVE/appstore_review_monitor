@@ -13,3 +13,4 @@ caffeinate -i -s python3 check_app_status.py --check-once
 
 echo
 read -r -p "单次检查完成。按回车关闭窗口..."
+

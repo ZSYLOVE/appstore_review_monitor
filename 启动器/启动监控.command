@@ -15,3 +15,4 @@ caffeinate -i -s python3 check_app_status.py
 
 echo
 read -r -p "监控已结束。按回车关闭窗口..."
+

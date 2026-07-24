@@ -8,6 +8,7 @@ from .auth import clear_secret_caches
 from .config import load_config, merge_apps_from_json, normalize_json_path, save_config
 from .constants import CONFIG_FILE, DEFAULT_PROXY_PORT, DEFAULT_UPDATE_REPO
 from .fingerprint import generate_run_fingerprint
+from .launcher import ensure_launchers
 from .monitor import run_monitor_loop
 from .security import print_security_status
 from .session import configure_session, validate_apple_connectivity
@@ -114,6 +115,7 @@ def resolve_proxy(config: dict, proxy_arg: str = None, *, interactive: bool = Tr
 
 def main():
     args = parse_cli_args()
+    ensure_launchers()
     if maybe_handle_update(args):
         return
 
