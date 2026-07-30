@@ -11,6 +11,7 @@ from .constants import (
     CHECK_INTERVAL_RANDOM_MAX,
     CHECK_INTERVAL_RANDOM_MIN,
     CONFIG_FILE,
+    DEFAULT_APPROVED_CHECK_INTERVAL,
     DEFAULT_PROXY_PORT,
     DEFAULT_UPDATE_REPO,
     DIR_MODE_PRIVATE,
@@ -66,9 +67,13 @@ def apply_config_defaults(config: dict) -> dict:
         config["STRICT_PROXY"] = env_strict in ("1", "true", "yes", "on")
     if "COMPACT_OUTPUT" not in config:
         config["COMPACT_OUTPUT"] = False
+    if "DEFAULT_APPROVED_CHECK_INTERVAL" not in config:
+        config["DEFAULT_APPROVED_CHECK_INTERVAL"] = DEFAULT_APPROVED_CHECK_INTERVAL
     if "UPDATE_REPO" not in config or not str(config.get("UPDATE_REPO", "")).strip():
         env_repo = os.environ.get("APPSTORE_MONITOR_UPDATE_REPO", "").strip()
         config["UPDATE_REPO"] = env_repo or DEFAULT_UPDATE_REPO
+    for app in config.get("APPROVED_APPS", []):
+        app.setdefault("APPROVED_CHECK_INTERVAL", config["DEFAULT_APPROVED_CHECK_INTERVAL"])
     return config
 
 
@@ -155,11 +160,29 @@ def merge_apps_from_json(json_path: str, apps: list, config: dict = None) -> int
     return added_count
 
 
+def approved_check_interval_seconds(app: dict = None, config: dict = None) -> int:
+    """已过审应用巡查间隔（秒），默认 1 天。"""
+    if app and app.get("APPROVED_CHECK_INTERVAL"):
+        try:
+            return max(3600, int(app["APPROVED_CHECK_INTERVAL"]))
+        except (TypeError, ValueError):
+            pass
+    if config and config.get("DEFAULT_APPROVED_CHECK_INTERVAL"):
+        try:
+            return max(3600, int(config["DEFAULT_APPROVED_CHECK_INTERVAL"]))
+        except (TypeError, ValueError):
+            pass
+    return DEFAULT_APPROVED_CHECK_INTERVAL
+
+
 def archive_approved_app(config: dict, app: dict, version_string: str, app_store_state: str) -> None:
     archived = dict(app)
-    archived["APPROVED_AT"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    now = datetime.now()
+    archived["APPROVED_AT"] = now.strftime("%Y-%m-%d %H:%M:%S")
     archived["APPROVED_VERSION"] = version_string
     archived["APPROVED_STATE"] = app_store_state
+    archived["APPROVED_CHECK_INTERVAL"] = approved_check_interval_seconds(app, config)
+    archived["LAST_APPROVED_CHECK_AT"] = now.strftime("%Y-%m-%d %H:%M:%S")
     approved = [a for a in config.get("APPROVED_APPS", []) if a.get("APP_ID") != app.get("APP_ID")]
     approved.append(archived)
     config["APPROVED_APPS"] = approved
@@ -204,7 +227,13 @@ def restore_app_to_pending(config: dict, app: dict) -> None:
     """已过审应用出现新版本或非上架态时，移回待监控列表（不含已下架终态）。"""
     app_id = app.get("APP_ID")
     restored = dict(app)
-    for key in ("APPROVED_AT", "APPROVED_VERSION", "APPROVED_STATE"):
+    for key in (
+        "APPROVED_AT",
+        "APPROVED_VERSION",
+        "APPROVED_STATE",
+        "APPROVED_CHECK_INTERVAL",
+        "LAST_APPROVED_CHECK_AT",
+    ):
         restored.pop(key, None)
     config["APPROVED_APPS"] = [
         a for a in config.get("APPROVED_APPS", []) if a.get("APP_ID") != app_id

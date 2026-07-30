@@ -12,6 +12,8 @@ from .auth import get_token_for_app
 from .config import (
     archive_approved_app,
     archive_removed_app,
+    approved_check_interval_seconds,
+    format_interval_minutes,
     is_placeholder_app_name,
     restore_app_to_pending,
     save_config,
@@ -21,6 +23,7 @@ from .constants import (
     APP_STORE_STATES,
     APPROVED_STATES,
     CONFIG_FILE,
+    DEFAULT_APPROVED_CHECK_INTERVAL,
     DELISTED_STATES,
     REJECTED_STATES,
 )
@@ -154,16 +157,82 @@ def _acquire_single_instance_lock(config_path: str = None):
     return lock_handle
 
 
+def _parse_check_at(value) -> float:
+    if value is None or value == "":
+        return 0.0
+    if isinstance(value, (int, float)):
+        return float(value)
+    text = str(value).strip()
+    try:
+        return datetime.strptime(text, "%Y-%m-%d %H:%M:%S").timestamp()
+    except ValueError:
+        try:
+            return float(text)
+        except ValueError:
+            return 0.0
+
+
+def _approved_is_due(app: dict, state: dict, config: dict, now_ts: float) -> bool:
+    next_due = state.get("next_due_at")
+    if next_due is not None:
+        return now_ts >= float(next_due)
+    last_at = _parse_check_at(app.get("LAST_APPROVED_CHECK_AT"))
+    if last_at <= 0:
+        # 未记录上次巡查时，用过审时间兜底，避免启动瞬间全量打 API
+        last_at = _parse_check_at(app.get("APPROVED_AT"))
+    if last_at <= 0:
+        return True
+    interval = approved_check_interval_seconds(app, config)
+    return now_ts >= last_at + interval
+
+
+def _mark_approved_checked(app: dict, state: dict, config: dict, *, success: bool) -> None:
+    now = datetime.now()
+    now_ts = now.timestamp()
+    interval = approved_check_interval_seconds(app, config)
+    # 失败时 1 小时后再试，避免跟待监控同频刷屏
+    wait = interval if success else min(3600, interval)
+    state["next_due_at"] = now_ts + wait
+    state["next_sleep_time"] = wait
+    if success:
+        app["LAST_APPROVED_CHECK_AT"] = now.strftime("%Y-%m-%d %H:%M:%S")
+        app.setdefault("APPROVED_CHECK_INTERVAL", interval)
+
+
 def _collect_monitor_targets(config, app_states):
     targets = []
+    now_ts = datetime.now().timestamp()
     for app in config.get("APPS", []):
         app_id = app["APP_ID"]
         if app_states.get(app_id, {}).get("is_done"):
             continue
         targets.append((app, "APPS"))
     for app in config.get("APPROVED_APPS", []):
-        targets.append((app, "APPROVED_APPS"))
+        app_id = app["APP_ID"]
+        state = _ensure_app_state(app_id, app, "APPROVED_APPS", app_states)
+        if _approved_is_due(app, state, config, now_ts):
+            targets.append((app, "APPROVED_APPS"))
     return targets
+
+
+def _seconds_until_next_approved(config, app_states) -> int:
+    """未到期的已过审应用，距下次巡查的最短秒数。"""
+    now_ts = datetime.now().timestamp()
+    waits = []
+    for app in config.get("APPROVED_APPS", []):
+        app_id = app["APP_ID"]
+        state = _ensure_app_state(app_id, app, "APPROVED_APPS", app_states)
+        if _approved_is_due(app, state, config, now_ts):
+            continue
+        next_due = state.get("next_due_at")
+        if next_due is None:
+            last_at = _parse_check_at(app.get("LAST_APPROVED_CHECK_AT"))
+            if last_at <= 0:
+                last_at = _parse_check_at(app.get("APPROVED_AT"))
+            interval = approved_check_interval_seconds(app, config)
+            next_due = last_at + interval if last_at > 0 else now_ts
+        waits.append(max(1, int(next_due - now_ts)))
+    return min(waits) if waits else 0
 
 
 def _ensure_app_state(app_id, app, source, app_states):
@@ -174,13 +243,16 @@ def _ensure_app_state(app_id, app, source, app_states):
     if source == "APPROVED_APPS":
         initial_state = app.get("APPROVED_STATE")
         initial_version = app.get("APPROVED_VERSION")
+        interval = approved_check_interval_seconds(app)
+        next_sleep = interval
     else:
         initial_state = app.get("LAST_STORE_STATE")
         initial_version = app.get("LAST_VERSION_STRING")
+        next_sleep = 600
     app_states[app_id] = {
         "last_state": initial_state,
         "last_version": initial_version,
-        "next_sleep_time": 600,
+        "next_sleep_time": next_sleep,
         "is_done": False,
         "source": source,
     }
@@ -216,7 +288,20 @@ def run_monitor_loop(
         if interactive:
             print("💡 倒计时期间按 R+回车 添加应用，E+回车 修改应用配置，D+回车 移除应用。")
         if config.get("APPROVED_APPS"):
-            print("💡 已过审应用已从待监控列表移出，后台静默监控（下架或新版本时才会通知）。")
+            hours = max(
+                1,
+                int(
+                    (
+                        config.get("DEFAULT_APPROVED_CHECK_INTERVAL")
+                        or DEFAULT_APPROVED_CHECK_INTERVAL
+                    )
+                    // 3600
+                ),
+            )
+            print(
+                f"💡 已过审应用默认每 {hours} 小时巡查一次（不与待监控同频），"
+                "下架/新版本时才会通知；可在 E 修改间隔。"
+            )
 
         app_states = {}
 
@@ -253,6 +338,29 @@ def run_monitor_loop(
                 ensure_round_banner()
 
             if not monitor_targets:
+                wait = _seconds_until_next_approved(config, app_states)
+                if wait > 0 and config.get("APPROVED_APPS"):
+                    if check_once:
+                        print("\n✅ --check-once 模式：本轮无到期任务，退出。")
+                        print_app_status_lists(config)
+                        return
+                    print(
+                        f"\n💤 待监控已空闲，已过审将在约 {format_interval_minutes(wait)} 分钟后巡查..."
+                    )
+                    cmd = countdown_sleep(wait, round_no=round_no, interactive=interactive)
+                    if cmd == "R":
+                        pending_interactive = "add"
+                        interrupted = True
+                        break
+                    if cmd == "E":
+                        pending_interactive = "edit"
+                        interrupted = True
+                        break
+                    if cmd == "D":
+                        pending_interactive = "remove"
+                        interrupted = True
+                        break
+                    continue
                 print("\n🎉 所有监控任务已完成！")
                 print_app_status_lists(config)
                 if config_dirty:
@@ -271,6 +379,7 @@ def run_monitor_loop(
                 list_tag = "已过审" if source == "APPROVED_APPS" else "待监控"
 
                 max_retries = 3
+                approved_check_ok = False
                 for attempt in range(max_retries):
                     try:
                         token = get_token_for_app(app)
@@ -454,6 +563,10 @@ def run_monitor_loop(
 
                         if app_store_state == "IN_REVIEW":
                             state["next_sleep_time"] = int(app.get("REVIEW_INTERVAL", 180))
+                        elif source == "APPROVED_APPS":
+                            _mark_approved_checked(app, state, config, success=True)
+                            approved_check_ok = True
+                            config_dirty = True
                         else:
                             state["next_sleep_time"] = int(app.get("CHECK_INTERVAL", 600))
 
@@ -537,6 +650,10 @@ def run_monitor_loop(
                         else:
                             print("  ⚠️ 多次重试均失败，跳过本轮该应用。")
 
+                if source == "APPROVED_APPS" and not approved_check_ok:
+                    _mark_approved_checked(app, state, config, success=False)
+                    config_dirty = True
+
                 if interrupted:
                     break
 
@@ -552,8 +669,11 @@ def run_monitor_loop(
             if compact and not round_banner_printed and unchanged_rows:
                 print_unchanged_status_line(round_no, unchanged_rows)
 
-            monitor_targets = _collect_monitor_targets(config, app_states)
-            if not monitor_targets:
+            has_pending_left = any(
+                not app_states.get(a["APP_ID"], {}).get("is_done") for a in config.get("APPS", [])
+            )
+            has_approved = bool(config.get("APPROVED_APPS"))
+            if not has_pending_left and not has_approved:
                 break
 
             if check_once:
@@ -561,7 +681,21 @@ def run_monitor_loop(
                 print_app_status_lists(config)
                 return
 
-            min_sleep = min(app_states[t[0]["APP_ID"]]["next_sleep_time"] for t in monitor_targets)
+            sleeps = []
+            for app in config.get("APPS", []):
+                st = app_states.get(app["APP_ID"])
+                if st and not st.get("is_done"):
+                    sleeps.append(int(st.get("next_sleep_time", 600)))
+            approved_wait = _seconds_until_next_approved(config, app_states)
+            if approved_wait > 0:
+                sleeps.append(approved_wait)
+            # 若已有到期已过审，尽快进入下一轮
+            now_ts = datetime.now().timestamp()
+            for app in config.get("APPROVED_APPS", []):
+                st = _ensure_app_state(app["APP_ID"], app, "APPROVED_APPS", app_states)
+                if _approved_is_due(app, st, config, now_ts):
+                    sleeps.append(1)
+            min_sleep = min(sleeps) if sleeps else 600
 
             if round_banner_printed or (not compact and has_pending):
                 print("\n" + "-" * 40)

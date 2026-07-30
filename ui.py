@@ -35,7 +35,7 @@ def print_app_status_lists(config: dict) -> None:
             print(f"     {i}. {name} (ID: {app.get('APP_ID')})")
     else:
         print("     （暂无）")
-    print(f"  🟢 已过审 ({len(approved)} 个):")
+    print(f"  🟢 已过审 ({len(approved)} 个，默认每天巡查):")
     if approved:
         for i, app in enumerate(approved, 1):
             name = app.get("APP_NAME", f"App({app.get('APP_ID')})")
@@ -43,7 +43,13 @@ def print_app_status_lists(config: dict) -> None:
             at = app.get("APPROVED_AT", "")
             ver_str = f" v{ver}" if ver else ""
             time_str = f" · {at}" if at else ""
-            print(f"     {i}. {name}{ver_str} (ID: {app.get('APP_ID')}){time_str}")
+            interval = app.get("APPROVED_CHECK_INTERVAL")
+            if interval:
+                hours = max(1, int(interval) // 3600)
+                interval_str = f" · 每{hours}小时巡查"
+            else:
+                interval_str = " · 每24小时巡查"
+            print(f"     {i}. {name}{ver_str} (ID: {app.get('APP_ID')}){time_str}{interval_str}")
     else:
         print("     （暂无）")
     print(f"  ❌ 已移除/下架 ({len(removed)} 个，仅记录不再监控):")

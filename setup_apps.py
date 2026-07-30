@@ -6,6 +6,7 @@ from .auth import clear_secret_caches
 from .config import (
     archive_manually_removed_app,
     app_config_lists,
+    approved_check_interval_seconds,
     format_interval_minutes,
     is_placeholder_app_name,
     merge_apps_from_json,
@@ -55,6 +56,9 @@ def _app_id_in_use(config: dict, app_id: str, exclude_id: str = "") -> bool:
 def edit_single_app(app: dict, config: dict) -> bool:
     app_id = app.get("APP_ID", "")
     app_name = app.get("APP_NAME", f"App({app_id})")
+    is_approved = any(
+        a.get("APP_ID") == app_id for a in config.get("APPROVED_APPS", [])
+    )
     print(f"\n🔧 修改应用配置: {app_name} (ID: {app_id})")
     changed = False
 
@@ -111,31 +115,47 @@ def edit_single_app(app: dict, config: dict) -> bool:
         app["FEISHU_WEBHOOK"] = new_feishu
         changed = True
 
-    check_min = str(int(app.get("CHECK_INTERVAL", 600) // 60))
-    new_check_min = get_user_input("👉 非审核中轮询间隔(分钟)", check_min)
-    try:
-        new_check = int(float(new_check_min) * 60)
-        if new_check < 60:
-            print("⚠️ 轮询间隔不能低于 1 分钟，已自动重置为 10 分钟")
-            new_check = 600
-    except ValueError:
-        new_check = app.get("CHECK_INTERVAL", 600)
-    if new_check != app.get("CHECK_INTERVAL"):
-        app["CHECK_INTERVAL"] = new_check
-        changed = True
+    if is_approved:
+        interval = approved_check_interval_seconds(app, config)
+        hours_val = max(1.0, interval / 3600)
+        hours_str = str(int(hours_val)) if hours_val == int(hours_val) else f"{hours_val:.1f}"
+        new_hours = get_user_input("👉 已过审巡查间隔(小时，默认24)", hours_str)
+        try:
+            new_interval = int(float(new_hours) * 3600)
+            if new_interval < 3600:
+                print("⚠️ 已过审巡查间隔不能低于 1 小时，已重置为 24 小时")
+                new_interval = 86400
+        except ValueError:
+            new_interval = interval
+        if new_interval != app.get("APPROVED_CHECK_INTERVAL"):
+            app["APPROVED_CHECK_INTERVAL"] = new_interval
+            changed = True
+    else:
+        check_min = str(int(app.get("CHECK_INTERVAL", 600) // 60))
+        new_check_min = get_user_input("👉 非审核中轮询间隔(分钟)", check_min)
+        try:
+            new_check = int(float(new_check_min) * 60)
+            if new_check < 60:
+                print("⚠️ 轮询间隔不能低于 1 分钟，已自动重置为 10 分钟")
+                new_check = 600
+        except ValueError:
+            new_check = app.get("CHECK_INTERVAL", 600)
+        if new_check != app.get("CHECK_INTERVAL"):
+            app["CHECK_INTERVAL"] = new_check
+            changed = True
 
-    review_min = str(int(app.get("REVIEW_INTERVAL", 180) // 60))
-    new_review_min = get_user_input("👉 审核中轮询间隔(分钟)", review_min)
-    try:
-        new_review = int(float(new_review_min) * 60)
-        if new_review < 30:
-            print("⚠️ 轮询间隔不能低于 0.5 分钟，已自动重置为 3 分钟")
-            new_review = 180
-    except ValueError:
-        new_review = app.get("REVIEW_INTERVAL", 180)
-    if new_review != app.get("REVIEW_INTERVAL"):
-        app["REVIEW_INTERVAL"] = new_review
-        changed = True
+        review_min = str(int(app.get("REVIEW_INTERVAL", 180) // 60))
+        new_review_min = get_user_input("👉 审核中轮询间隔(分钟)", review_min)
+        try:
+            new_review = int(float(new_review_min) * 60)
+            if new_review < 30:
+                print("⚠️ 轮询间隔不能低于 0.5 分钟，已自动重置为 3 分钟")
+                new_review = 180
+        except ValueError:
+            new_review = app.get("REVIEW_INTERVAL", 180)
+        if new_review != app.get("REVIEW_INTERVAL"):
+            app["REVIEW_INTERVAL"] = new_review
+            changed = True
 
     if is_placeholder_app_name(app.get("APP_NAME", ""), app.get("APP_ID", "")):
         app["APP_NAME"] = f"App({app.get('APP_ID', '')})"

@@ -16,6 +16,10 @@ DEFAULT_UPDATE_REPO = "ZSYLOVE/appstore_review_monitor"
 CHECK_INTERVAL_RANDOM_MIN = 300
 CHECK_INTERVAL_RANDOM_MAX = 720
 
+# 已过审应用默认巡查间隔（秒）：不与待监控同频，默认每天一次
+DEFAULT_APPROVED_CHECK_INTERVAL = 86400
+APPROVED_CHECK_INTERVAL_MIN = 3600
+
 # 静态兜底；正常运行时由 fingerprint.generate_run_fingerprint() 每次启动随机覆盖
 DEFAULT_IMPERSONATE_TARGET = "chrome131"
 
