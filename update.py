@@ -302,6 +302,8 @@ def check_for_update() -> UpdateInfo:
 
 def _list_updatable_files(root: str) -> list:
     files = []
+    if not os.path.isdir(root):
+        return files
     for name in os.listdir(root):
         if name == "app_data" or name.startswith("."):
             continue
@@ -313,11 +315,16 @@ def _list_updatable_files(root: str) -> list:
     return files
 
 
+def _package_parent() -> str:
+    return os.path.dirname(PACKAGE_DIR)
+
+
 def _backup_code_files() -> str:
-    backup_dir = os.path.join(PACKAGE_DIR, ".update_backup")
-    os.makedirs(backup_dir, exist_ok=True)
-    stamp = str(int(os.path.getmtime(CONFIG_FILE) if os.path.exists(CONFIG_FILE) else 0))
-    target = os.path.join(backup_dir, stamp)
+    """备份当前可更新文件，供失败时回退。"""
+    backup_root = os.path.join(PACKAGE_DIR, ".update_backup")
+    os.makedirs(backup_root, exist_ok=True)
+    stamp = time.strftime("%Y%m%d_%H%M%S")
+    target = os.path.join(backup_root, f"pre_update_{stamp}")
     os.makedirs(target, exist_ok=True)
     for name in _list_updatable_files(PACKAGE_DIR):
         src = os.path.join(PACKAGE_DIR, name)
@@ -328,10 +335,20 @@ def _backup_code_files() -> str:
             shutil.copytree(src, dst)
         else:
             shutil.copy2(src, dst)
+    with open(os.path.join(target, ".backup_meta.txt"), "w", encoding="utf-8") as f:
+        f.write(f"version={__version__}\ncreated={stamp}\n")
+    # 固定指向最近一次更新前快照，便于手动排查
+    last_good = os.path.join(backup_root, "last_good")
+    if os.path.isdir(last_good):
+        shutil.rmtree(last_good)
+    shutil.copytree(target, last_good)
     return target
 
 
 def _restore_backup(backup_dir: str) -> None:
+    """从备份目录完整回退到更新前文件。"""
+    if not backup_dir or not os.path.isdir(backup_dir):
+        raise FileNotFoundError(f"备份目录不存在: {backup_dir}")
     for name in _list_updatable_files(backup_dir):
         src = os.path.join(backup_dir, name)
         dst = os.path.join(PACKAGE_DIR, name)
@@ -341,6 +358,54 @@ def _restore_backup(backup_dir: str) -> None:
             shutil.copytree(src, dst)
         else:
             shutil.copy2(src, dst)
+
+
+def _smoke_test_install(expected_version: str = "") -> tuple:
+    """更新后自检：关键模块能否导入。失败则应回退。"""
+    parent = _package_parent()
+    pkg_name = os.path.basename(PACKAGE_DIR)
+    script = (
+        f"import importlib\n"
+        f"m = importlib.import_module('{pkg_name}')\n"
+        f"importlib.import_module('{pkg_name}.cli')\n"
+        f"importlib.import_module('{pkg_name}.monitor')\n"
+        f"importlib.import_module('{pkg_name}.ui')\n"
+        f"from {pkg_name}.ui import print_unchanged_status_line, countdown_sleep\n"
+        f"print(getattr(m, '__version__', ''))\n"
+    )
+    env = os.environ.copy()
+    env["PYTHONPATH"] = parent + os.pathsep + env.get("PYTHONPATH", "")
+    try:
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            cwd=parent,
+            capture_output=True,
+            text=True,
+            timeout=45,
+            env=env,
+        )
+    except Exception as e:
+        return False, f"自检进程异常: {e}"
+    if result.returncode != 0:
+        err = (result.stderr or result.stdout or "未知错误").strip()
+        return False, f"自检导入失败: {err[:400]}"
+    got = (result.stdout or "").strip().splitlines()
+    version = got[-1].strip() if got else ""
+    if expected_version and version and version != expected_version.lstrip("vV"):
+        return False, f"自检版本不符: 期望 v{expected_version}，实际 v{version}"
+    return True, version or expected_version
+
+
+def _rollback_after_failure(backup_dir: str, reason: str, local_version: str) -> tuple:
+    try:
+        _restore_backup(backup_dir)
+    except Exception as restore_err:
+        return False, f"更新失败: {reason}；回退也失败: {restore_err}"
+    # 回退后再次确认旧版本能用
+    ok, detail = _smoke_test_install(local_version)
+    if ok:
+        return False, f"更新失败已回退到 v{local_version}: {reason}"
+    return False, f"更新失败已尝试回退到 v{local_version}，但自检仍异常: {reason} | {detail}"
 
 
 def _apply_git_update() -> tuple:
@@ -368,11 +433,14 @@ def _apply_release_update(info: UpdateInfo) -> tuple:
         repo_path = repo.strip("/")
         zip_url = f"https://github.com/{repo_path}/archive/refs/tags/v{info.remote_version}.zip"
 
+    local_version = info.local_version or __version__
+    print(f"   💾 已备份当前版本 v{local_version}，失败将自动回退")
     backup_dir = _backup_code_files()
+
     try:
         payload = _download_bytes(zip_url)
     except URLError as e:
-        return False, f"下载更新包失败: {e}"
+        return False, f"下载更新包失败（未改动本地文件）: {e}"
 
     try:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -391,7 +459,7 @@ def _apply_release_update(info: UpdateInfo) -> tuple:
                     extracted_root = path
                     break
             if not extracted_root:
-                return False, "更新包结构异常"
+                return False, "更新包结构异常（未改动本地文件）"
 
             inner_root = extracted_root
             if len(_list_updatable_files(inner_root)) <= 1:
@@ -401,7 +469,11 @@ def _apply_release_update(info: UpdateInfo) -> tuple:
                         inner_root = nested
                         break
 
-            for name in _list_updatable_files(inner_root):
+            new_files = _list_updatable_files(inner_root)
+            if not new_files:
+                return False, "更新包中无可用代码文件（未改动本地文件）"
+
+            for name in new_files:
                 src = os.path.join(inner_root, name)
                 dst = os.path.join(PACKAGE_DIR, name)
                 if os.path.isdir(src):
@@ -410,13 +482,14 @@ def _apply_release_update(info: UpdateInfo) -> tuple:
                     shutil.copytree(src, dst)
                 else:
                     shutil.copy2(src, dst)
-        return True, f"已更新至 v{info.remote_version}"
     except Exception as e:
-        try:
-            _restore_backup(backup_dir)
-        except Exception:
-            pass
-        return False, f"更新失败并已尝试回滚: {e}"
+        return _rollback_after_failure(backup_dir, str(e), local_version)
+
+    ok, detail = _smoke_test_install(info.remote_version)
+    if not ok:
+        return _rollback_after_failure(backup_dir, detail, local_version)
+
+    return True, f"已更新至 v{info.remote_version}"
 
 
 def apply_update(info: UpdateInfo) -> tuple:
@@ -523,6 +596,7 @@ def maybe_handle_update(args) -> bool:
             print(f"✅ {msg}，正在重启…")
             restart_script()
         print(f"❌ {msg}")
+        print("   本地已保持/回退为可用版本，可继续监控。")
         return True
 
     if getattr(args, "skip_update", False):
@@ -546,8 +620,8 @@ def maybe_handle_update(args) -> bool:
         if ok:
             print(f"✅ {msg}，正在重启…")
             restart_script()
-        print(f"❌ 更新失败: {msg}")
-        print("   可稍后手动运行: python3 -m appstore_review_monitor --update\n")
+        print(f"❌ {msg}")
+        print("   已保持更新前可用版本，将继续监控；可稍后重试 --update\n")
         _pending_update_info = info
         return False
 
@@ -567,5 +641,6 @@ def apply_pending_update_now() -> bool:
         clear_pending_update_info()
         print(f"✅ {msg}，正在重启…")
         restart_script()
-    print(f"❌ 更新失败: {msg}")
+    print(f"❌ {msg}")
+    print("   已回退/保持更新前版本，可继续监控。")
     return False

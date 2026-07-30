@@ -18,7 +18,8 @@ from .constants import DEFAULT_APPROVED_CHECK_INTERVAL
 from .ui import get_user_input, print_app_status_lists
 
 
-def _edit_global_settings(config: dict, config_path: str = None) -> None:
+def edit_global_settings(config: dict, config_path: str = None) -> None:
+    """修改全局推送与已过审统一巡查间隔。"""
     print("\n🔧 修改全局配置：")
     new_pushplus = input(
         f"👉 粘贴 PushPlus Token [当前: {config.get('DEFAULT_PUSHPLUS', '')}]: "
@@ -304,7 +305,7 @@ def interactive_add_apps(config, apps, config_path: str = None):
                 interactive_remove_apps(config, apps, config_path)
                 continue
             if app_id_input.upper() == "M":
-                _edit_global_settings(config, config_path)
+                edit_global_settings(config, config_path)
                 continue
         else:
             print("\n--- ➕ 添加新监控应用 ---")
@@ -322,7 +323,7 @@ def interactive_add_apps(config, apps, config_path: str = None):
                 interactive_remove_apps(config, apps, config_path)
                 continue
             if app_id_input.upper() == "M":
-                _edit_global_settings(config, config_path)
+                edit_global_settings(config, config_path)
                 continue
 
         default_issuer_id = apps[-1].get("ISSUER_ID", "") if apps else ""

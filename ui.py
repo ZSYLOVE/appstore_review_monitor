@@ -1,4 +1,5 @@
 import os
+import re
 import select
 import sys
 import time
@@ -98,16 +99,20 @@ def countdown_sleep(
     try:
         for remaining in range(seconds, 0, -1):
             tag = f"已轮询{round_no}轮 · " if round_no > 0 else ""
-            hint = f" {update_hint}" if update_hint else ""
+            if update_hint:
+                ver = re.search(r"v[\d.]+", update_hint)
+                u_key = f"[U 更新·{ver.group(0)}]" if ver else "[U 更新]"
+            else:
+                u_key = "[U 更新]"
             sys.stdout.write(
                 f"\r\033[K{tag}⏳ 距离下次查询还剩: {remaining // 60:02d}分 {remaining % 60:02d}秒 "
-                f"[R 添加] [E 修改] [D 移除]...{hint} "
+                f"[R 添加] [E 修改] [D 移除] [M 全局] {u_key}... "
             )
             sys.stdout.flush()
             i, o, e = select.select([sys.stdin], [], [], 1)
             if i:
                 user_input = sys.stdin.readline().strip().upper()
-                if user_input in ("R", "E", "D", "U"):
+                if user_input in ("R", "E", "D", "M", "U"):
                     sys.stdout.write("\r\033[K")
                     print("\n")
                     return user_input

@@ -35,7 +35,12 @@ from .notify import (
     notify_version_change,
 )
 from .session import apple_headers, get_with_backoff, jitter, sleep_backoff
-from .setup_apps import interactive_add_apps, interactive_edit_apps, interactive_remove_apps
+from .setup_apps import (
+    edit_global_settings,
+    interactive_add_apps,
+    interactive_edit_apps,
+    interactive_remove_apps,
+)
 from .update import apply_pending_update_now, pending_update_hint
 from .ui import countdown_sleep, log_event, print_app_status_lists, print_unchanged_status_line
 
@@ -278,6 +283,8 @@ def run_monitor_loop(
             interactive_edit_apps(config, apps, config_path)
         elif interactive and pending_interactive == "remove":
             interactive_remove_apps(config, apps, config_path)
+        elif interactive and pending_interactive == "settings":
+            edit_global_settings(config, config_path)
         pending_interactive = None
 
         if not config.get("APPS") and not config.get("APPROVED_APPS"):
@@ -286,7 +293,7 @@ def run_monitor_loop(
 
         print("\n✅ 配置读取完毕，开始进入多应用 24 小时监控模式...")
         if interactive:
-            print("💡 倒计时期间按 R+回车 添加应用，E+回车 修改应用配置，D+回车 移除应用；有新版本时可按 U+回车更新。")
+            print("💡 倒计时期间: [R 添加] [E 修改] [D 移除] [M 全局] [U 更新]（键+回车）")
         if config.get("APPROVED_APPS"):
             hours = max(
                 1,
@@ -369,6 +376,10 @@ def run_monitor_loop(
                         break
                     if cmd == "D":
                         pending_interactive = "remove"
+                        interrupted = True
+                        break
+                    if cmd == "M":
+                        pending_interactive = "settings"
                         interrupted = True
                         break
                     continue
@@ -735,6 +746,11 @@ def run_monitor_loop(
             if cmd == "D":
                 print("\n🔄 [用户打断] 您按下了 D 键。即将进入移除应用模式...")
                 pending_interactive = "remove"
+                interrupted = True
+                break
+            if cmd == "M":
+                print("\n🔄 [用户打断] 您按下了 M 键。即将进入全局配置...")
+                pending_interactive = "settings"
                 interrupted = True
                 break
 
