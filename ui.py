@@ -63,6 +63,27 @@ def print_app_status_lists(config: dict) -> None:
         print("     （暂无）")
 
 
+def print_unchanged_status_line(round_no: int, rows: list) -> None:
+    if not rows:
+        return
+    try:
+        cols = os.get_terminal_size().columns
+    except Exception:
+        cols = 100
+    parts = []
+    for r in rows:
+        st = r["state"]
+        short = st.split("(")[0].strip() if "(" in st else st
+        parts.append(f"{r['name']} v{r['ver']} · {short}")
+    mid = " │ ".join(parts)
+    ts = datetime.now().strftime("%H:%M:%S")
+    line = f"💡 [{ts}] 第{round_no}轮 状态未变 · {mid}"
+    if len(line) >= cols:
+        line = line[: max(40, cols - 4)] + "…"
+    sys.stdout.write("\r\033[K" + line + "\n")
+    sys.stdout.flush()
+
+
 def countdown_sleep(
     seconds,
     round_no: int = 0,
