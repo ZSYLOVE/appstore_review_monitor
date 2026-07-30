@@ -14,7 +14,38 @@ from .config import (
     random_check_interval,
     save_config,
 )
+from .constants import DEFAULT_APPROVED_CHECK_INTERVAL
 from .ui import get_user_input, print_app_status_lists
+
+
+def _edit_global_settings(config: dict, config_path: str = None) -> None:
+    print("\n🔧 修改全局配置：")
+    new_pushplus = input(
+        f"👉 粘贴 PushPlus Token [当前: {config.get('DEFAULT_PUSHPLUS', '')}]: "
+    ).strip()
+    if new_pushplus:
+        config["DEFAULT_PUSHPLUS"] = new_pushplus
+    new_feishu = input(
+        f"👉 粘贴飞书 Webhook 地址 [当前: {config.get('DEFAULT_FEISHU', '')}]: "
+    ).strip()
+    if new_feishu:
+        config["DEFAULT_FEISHU"] = new_feishu
+
+    interval = approved_check_interval_seconds(config=config)
+    hours_val = max(1.0, interval / 3600)
+    hours_str = str(int(hours_val)) if hours_val == int(hours_val) else f"{hours_val:.1f}"
+    new_hours = get_user_input("👉 已过审统一巡查间隔(小时)", hours_str)
+    try:
+        new_interval = int(float(new_hours) * 3600)
+        if new_interval < 3600:
+            print("⚠️ 不能低于 1 小时，已重置为 24 小时")
+            new_interval = DEFAULT_APPROVED_CHECK_INTERVAL
+    except ValueError:
+        new_interval = interval
+    config["DEFAULT_APPROVED_CHECK_INTERVAL"] = new_interval
+
+    save_config(config, config_path)
+    print("✅ 全局配置已更新！\n")
 
 
 def _collect_editable_apps(config: dict) -> List[Tuple[str, dict]]:
@@ -115,22 +146,7 @@ def edit_single_app(app: dict, config: dict) -> bool:
         app["FEISHU_WEBHOOK"] = new_feishu
         changed = True
 
-    if is_approved:
-        interval = approved_check_interval_seconds(app, config)
-        hours_val = max(1.0, interval / 3600)
-        hours_str = str(int(hours_val)) if hours_val == int(hours_val) else f"{hours_val:.1f}"
-        new_hours = get_user_input("👉 已过审巡查间隔(小时，默认24)", hours_str)
-        try:
-            new_interval = int(float(new_hours) * 3600)
-            if new_interval < 3600:
-                print("⚠️ 已过审巡查间隔不能低于 1 小时，已重置为 24 小时")
-                new_interval = 86400
-        except ValueError:
-            new_interval = interval
-        if new_interval != app.get("APPROVED_CHECK_INTERVAL"):
-            app["APPROVED_CHECK_INTERVAL"] = new_interval
-            changed = True
-    else:
+    if not is_approved:
         check_min = str(int(app.get("CHECK_INTERVAL", 600) // 60))
         new_check_min = get_user_input("👉 非审核中轮询间隔(分钟)", check_min)
         try:
@@ -276,7 +292,7 @@ def interactive_add_apps(config, apps, config_path: str = None):
             print("\n💡 提示：你可以直接【拖拽】之前归档的 .json 配置文件到这里，免去手动输入。")
             app_id_input = input(
                 "👉 请输入待监控的新 App ID (或拖拽 .json 文件)，"
-                "M 修改推送，E 修改应用配置，D 移除应用，直接回车开始监控: "
+                "M 修改全局配置，E 修改应用配置，D 移除应用，直接回车开始监控: "
             ).strip()
             if not app_id_input:
                 print("\n🏃‍♂️ 退出添加模式，即将开始监控...")
@@ -288,25 +304,13 @@ def interactive_add_apps(config, apps, config_path: str = None):
                 interactive_remove_apps(config, apps, config_path)
                 continue
             if app_id_input.upper() == "M":
-                print("\n🔧 修改推送配置：")
-                new_pushplus = input(
-                    f"👉 粘贴 PushPlus Token [当前: {config.get('DEFAULT_PUSHPLUS', '')}]: "
-                ).strip()
-                if new_pushplus:
-                    config["DEFAULT_PUSHPLUS"] = new_pushplus
-                new_feishu = input(
-                    f"👉 粘贴飞书 Webhook 地址 [当前: {config.get('DEFAULT_FEISHU', '')}]: "
-                ).strip()
-                if new_feishu:
-                    config["DEFAULT_FEISHU"] = new_feishu
-                save_config(config, config_path)
-                print("✅ 推送配置已更新！\n")
+                _edit_global_settings(config, config_path)
                 continue
         else:
             print("\n--- ➕ 添加新监控应用 ---")
             print("💡 提示：你可以直接【拖拽】之前归档的 .json 配置文件到这里，免去手动输入。")
             app_id_input = input(
-                "👉 请输入待监控的 App ID (或拖拽 .json 文件)，M 修改推送，E 修改应用配置，D 移除应用: "
+                "👉 请输入待监控的 App ID (或拖拽 .json 文件)，M 修改全局配置，E 修改应用配置，D 移除应用: "
             ).strip()
             if not app_id_input:
                 print("⚠️ App ID 不能为空！")
@@ -318,19 +322,7 @@ def interactive_add_apps(config, apps, config_path: str = None):
                 interactive_remove_apps(config, apps, config_path)
                 continue
             if app_id_input.upper() == "M":
-                print("\n🔧 修改推送配置：")
-                new_pushplus = input(
-                    f"👉 粘贴 PushPlus Token [当前: {config.get('DEFAULT_PUSHPLUS', '')}]: "
-                ).strip()
-                if new_pushplus:
-                    config["DEFAULT_PUSHPLUS"] = new_pushplus
-                new_feishu = input(
-                    f"👉 粘贴飞书 Webhook 地址 [当前: {config.get('DEFAULT_FEISHU', '')}]: "
-                ).strip()
-                if new_feishu:
-                    config["DEFAULT_FEISHU"] = new_feishu
-                save_config(config, config_path)
-                print("✅ 推送配置已更新！\n")
+                _edit_global_settings(config, config_path)
                 continue
 
         default_issuer_id = apps[-1].get("ISSUER_ID", "") if apps else ""

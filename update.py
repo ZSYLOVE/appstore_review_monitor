@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import select
 import shutil
 import subprocess
 import sys
@@ -451,8 +452,56 @@ def print_update_status(info: UpdateInfo) -> None:
         print("  状态     : 已是最新")
 
 
+_pending_update_info: Optional[UpdateInfo] = None
+
+
+def get_pending_update_info() -> Optional[UpdateInfo]:
+    return _pending_update_info
+
+
+def clear_pending_update_info() -> None:
+    global _pending_update_info
+    _pending_update_info = None
+
+
+def pending_update_hint() -> str:
+    info = _pending_update_info
+    if not info or not info.available:
+        return ""
+    return f"[有新版本 v{info.remote_version} · U 更新]"
+
+
+def prompt_update_countdown(info: UpdateInfo, timeout: int = 5) -> bool:
+    """5 秒倒计时：Y+回车立即更新，超时或其他输入则跳过。"""
+    if not sys.stdin.isatty():
+        return False
+    print("\n" + "─" * 45)
+    print(f"📦 发现新版本 v{info.remote_version}（当前 v{info.local_version}）")
+    print("   更新不会覆盖 app_data/ 里的配置与密钥")
+    print(f"👉 {timeout} 秒内输入 Y 并回车立即更新，超时将跳过并继续监控")
+    try:
+        for remaining in range(timeout, 0, -1):
+            sys.stdout.write(f"\r\033[K⏳ {remaining} 秒… 输入 Y 回车更新 / 其他键跳过 ")
+            sys.stdout.flush()
+            ready, _, _ = select.select([sys.stdin], [], [], 1)
+            if ready:
+                choice = sys.stdin.readline().strip().lower()
+                sys.stdout.write("\r\033[K")
+                print("─" * 45 + "\n")
+                return choice in ("y", "yes")
+        sys.stdout.write("\r\033[K")
+        print("ℹ️  已跳过更新，监控中会持续提示；可随时按 U+回车更新，或运行 --update")
+        print("─" * 45 + "\n")
+        return False
+    except KeyboardInterrupt:
+        sys.stdout.write("\r\033[K")
+        print("\nℹ️  已跳过更新\n")
+        return False
+
+
 def maybe_handle_update(args) -> bool:
     """处理 --update / --check-update / 启动时交互更新。返回 True 表示应退出 main。"""
+    global _pending_update_info
     interactive = not args.daemon and not getattr(args, "check_once", False)
 
     if getattr(args, "check_update", False):
@@ -485,24 +534,38 @@ def maybe_handle_update(args) -> bool:
 
     if args.daemon or getattr(args, "check_once", False):
         print(f"ℹ️  有新版本 v{info.remote_version}（当前 v{info.local_version}），可运行 --update 更新")
+        _pending_update_info = info
         return False
 
     if not interactive:
         return False
 
-    print("\n" + "─" * 45)
-    print(f"📦 发现新版本 v{info.remote_version}（当前 v{info.local_version}）")
-    print("   更新不会覆盖 app_data/ 里的配置与密钥")
-    choice = input("👉 是否立即更新并重启？[Y/n]: ").strip().lower()
-    print("─" * 45 + "\n")
-    if choice not in ("", "y", "yes"):
+    if prompt_update_countdown(info, timeout=5):
+        print(f"📦 正在更新 v{info.local_version} → v{info.remote_version} …")
+        ok, msg = apply_update(info)
+        if ok:
+            print(f"✅ {msg}，正在重启…")
+            restart_script()
+        print(f"❌ 更新失败: {msg}")
+        print("   可稍后手动运行: python3 -m appstore_review_monitor --update\n")
+        _pending_update_info = info
         return False
 
+    _pending_update_info = info
+    return False
+
+
+def apply_pending_update_now() -> bool:
+    """监控中按 U 触发：下载安装并重启。成功则不返回。"""
+    info = _pending_update_info
+    if not info or not info.available:
+        print("ℹ️  当前没有待安装的新版本。")
+        return False
     print(f"📦 正在更新 v{info.local_version} → v{info.remote_version} …")
     ok, msg = apply_update(info)
     if ok:
+        clear_pending_update_info()
         print(f"✅ {msg}，正在重启…")
         restart_script()
     print(f"❌ 更新失败: {msg}")
-    print("   可稍后手动运行: python3 check_app_status.py --update\n")
     return False

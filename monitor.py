@@ -36,6 +36,7 @@ from .notify import (
 )
 from .session import apple_headers, get_with_backoff, jitter, sleep_backoff
 from .setup_apps import interactive_add_apps, interactive_edit_apps, interactive_remove_apps
+from .update import apply_pending_update_now, pending_update_hint
 from .ui import countdown_sleep, log_event, print_app_status_lists, print_unchanged_status_line
 
 
@@ -196,7 +197,6 @@ def _mark_approved_checked(app: dict, state: dict, config: dict, *, success: boo
     state["next_sleep_time"] = wait
     if success:
         app["LAST_APPROVED_CHECK_AT"] = now.strftime("%Y-%m-%d %H:%M:%S")
-        app.setdefault("APPROVED_CHECK_INTERVAL", interval)
 
 
 def _collect_monitor_targets(config, app_states):
@@ -286,7 +286,7 @@ def run_monitor_loop(
 
         print("\n✅ 配置读取完毕，开始进入多应用 24 小时监控模式...")
         if interactive:
-            print("💡 倒计时期间按 R+回车 添加应用，E+回车 修改应用配置，D+回车 移除应用。")
+            print("💡 倒计时期间按 R+回车 添加应用，E+回车 修改应用配置，D+回车 移除应用；有新版本时可按 U+回车更新。")
         if config.get("APPROVED_APPS"):
             hours = max(
                 1,
@@ -299,9 +299,12 @@ def run_monitor_loop(
                 ),
             )
             print(
-                f"💡 已过审应用默认每 {hours} 小时巡查一次（不与待监控同频），"
-                "下架/新版本时才会通知；可在 E 修改间隔。"
+                f"💡 已过审应用统一每 {hours} 小时巡查一次（不与待监控同频），"
+                "下架/新版本时才会通知；按 M 可改统一间隔。"
             )
+        update_tip = pending_update_hint()
+        if update_tip:
+            print(f"💡 {update_tip} —— 倒计时期间按 U+回车可立即更新")
 
         app_states = {}
 
@@ -347,7 +350,15 @@ def run_monitor_loop(
                     print(
                         f"\n💤 待监控已空闲，已过审将在约 {format_interval_minutes(wait)} 分钟后巡查..."
                     )
-                    cmd = countdown_sleep(wait, round_no=round_no, interactive=interactive)
+                    cmd = countdown_sleep(
+                        wait,
+                        round_no=round_no,
+                        interactive=interactive,
+                        update_hint=pending_update_hint(),
+                    )
+                    if cmd == "U":
+                        apply_pending_update_now()
+                        continue
                     if cmd == "R":
                         pending_interactive = "add"
                         interrupted = True
@@ -702,7 +713,15 @@ def run_monitor_loop(
                 print(f"📋 第 {round_no} 轮巡检完毕")
                 print_app_status_lists(config)
 
-            cmd = countdown_sleep(min_sleep, round_no=round_no, interactive=interactive)
+            cmd = countdown_sleep(
+                min_sleep,
+                round_no=round_no,
+                interactive=interactive,
+                update_hint=pending_update_hint(),
+            )
+            if cmd == "U":
+                apply_pending_update_now()
+                continue
             if cmd == "R":
                 print("\n🔄 [用户打断] 您按下了 R 键。即将进入添加应用模式...")
                 pending_interactive = "add"

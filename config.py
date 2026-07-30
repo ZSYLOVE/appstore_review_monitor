@@ -72,8 +72,6 @@ def apply_config_defaults(config: dict) -> dict:
     if "UPDATE_REPO" not in config or not str(config.get("UPDATE_REPO", "")).strip():
         env_repo = os.environ.get("APPSTORE_MONITOR_UPDATE_REPO", "").strip()
         config["UPDATE_REPO"] = env_repo or DEFAULT_UPDATE_REPO
-    for app in config.get("APPROVED_APPS", []):
-        app.setdefault("APPROVED_CHECK_INTERVAL", config["DEFAULT_APPROVED_CHECK_INTERVAL"])
     return config
 
 
@@ -161,12 +159,7 @@ def merge_apps_from_json(json_path: str, apps: list, config: dict = None) -> int
 
 
 def approved_check_interval_seconds(app: dict = None, config: dict = None) -> int:
-    """已过审应用巡查间隔（秒），默认 1 天。"""
-    if app and app.get("APPROVED_CHECK_INTERVAL"):
-        try:
-            return max(3600, int(app["APPROVED_CHECK_INTERVAL"]))
-        except (TypeError, ValueError):
-            pass
+    """已过审应用统一巡查间隔（秒），默认 1 天；不按单 App 单独设置。"""
     if config and config.get("DEFAULT_APPROVED_CHECK_INTERVAL"):
         try:
             return max(3600, int(config["DEFAULT_APPROVED_CHECK_INTERVAL"]))
@@ -181,7 +174,7 @@ def archive_approved_app(config: dict, app: dict, version_string: str, app_store
     archived["APPROVED_AT"] = now.strftime("%Y-%m-%d %H:%M:%S")
     archived["APPROVED_VERSION"] = version_string
     archived["APPROVED_STATE"] = app_store_state
-    archived["APPROVED_CHECK_INTERVAL"] = approved_check_interval_seconds(app, config)
+    archived.pop("APPROVED_CHECK_INTERVAL", None)
     archived["LAST_APPROVED_CHECK_AT"] = now.strftime("%Y-%m-%d %H:%M:%S")
     approved = [a for a in config.get("APPROVED_APPS", []) if a.get("APP_ID") != app.get("APP_ID")]
     approved.append(archived)

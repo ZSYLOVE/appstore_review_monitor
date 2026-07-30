@@ -24,9 +24,12 @@ def monitor_print(*args, **kwargs) -> None:
 
 
 def print_app_status_lists(config: dict) -> None:
+    from .config import approved_check_interval_seconds
+
     pending = config.get("APPS", [])
     approved = config.get("APPROVED_APPS", [])
     removed = config.get("REMOVED_APPS", [])
+    approved_hours = max(1, approved_check_interval_seconds(config=config) // 3600)
     print("\n📋 应用状态一览")
     print(f"  ⏳ 待监控 ({len(pending)} 个):")
     if pending:
@@ -35,7 +38,7 @@ def print_app_status_lists(config: dict) -> None:
             print(f"     {i}. {name} (ID: {app.get('APP_ID')})")
     else:
         print("     （暂无）")
-    print(f"  🟢 已过审 ({len(approved)} 个，默认每天巡查):")
+    print(f"  🟢 已过审 ({len(approved)} 个，统一每{approved_hours}小时巡查):")
     if approved:
         for i, app in enumerate(approved, 1):
             name = app.get("APP_NAME", f"App({app.get('APP_ID')})")
@@ -43,13 +46,7 @@ def print_app_status_lists(config: dict) -> None:
             at = app.get("APPROVED_AT", "")
             ver_str = f" v{ver}" if ver else ""
             time_str = f" · {at}" if at else ""
-            interval = app.get("APPROVED_CHECK_INTERVAL")
-            if interval:
-                hours = max(1, int(interval) // 3600)
-                interval_str = f" · 每{hours}小时巡查"
-            else:
-                interval_str = " · 每24小时巡查"
-            print(f"     {i}. {name}{ver_str} (ID: {app.get('APP_ID')}){time_str}{interval_str}")
+            print(f"     {i}. {name}{ver_str} (ID: {app.get('APP_ID')}){time_str}")
     else:
         print("     （暂无）")
     print(f"  ❌ 已移除/下架 ({len(removed)} 个，仅记录不再监控):")
@@ -66,28 +63,12 @@ def print_app_status_lists(config: dict) -> None:
         print("     （暂无）")
 
 
-def print_unchanged_status_line(round_no: int, rows: list) -> None:
-    if not rows:
-        return
-    try:
-        cols = os.get_terminal_size().columns
-    except Exception:
-        cols = 100
-    parts = []
-    for r in rows:
-        st = r["state"]
-        short = st.split("(")[0].strip() if "(" in st else st
-        parts.append(f"{r['name']} v{r['ver']} · {short}")
-    mid = " │ ".join(parts)
-    ts = datetime.now().strftime("%H:%M:%S")
-    line = f"💡 [{ts}] 第{round_no}轮 状态未变 · {mid}"
-    if len(line) >= cols:
-        line = line[: max(40, cols - 4)] + "…"
-    sys.stdout.write("\r\033[K" + line + "\n")
-    sys.stdout.flush()
-
-
-def countdown_sleep(seconds, round_no: int = 0, interactive: bool = True):
+def countdown_sleep(
+    seconds,
+    round_no: int = 0,
+    interactive: bool = True,
+    update_hint: str = "",
+):
     print()
     if not interactive or not sys.stdin.isatty():
         time.sleep(seconds)
@@ -96,15 +77,16 @@ def countdown_sleep(seconds, round_no: int = 0, interactive: bool = True):
     try:
         for remaining in range(seconds, 0, -1):
             tag = f"已轮询{round_no}轮 · " if round_no > 0 else ""
+            hint = f" {update_hint}" if update_hint else ""
             sys.stdout.write(
                 f"\r\033[K{tag}⏳ 距离下次查询还剩: {remaining // 60:02d}分 {remaining % 60:02d}秒 "
-                f"[R 添加] [E 修改] [D 移除]... "
+                f"[R 添加] [E 修改] [D 移除]...{hint} "
             )
             sys.stdout.flush()
             i, o, e = select.select([sys.stdin], [], [], 1)
             if i:
                 user_input = sys.stdin.readline().strip().upper()
-                if user_input in ("R", "E", "D"):
+                if user_input in ("R", "E", "D", "U"):
                     sys.stdout.write("\r\033[K")
                     print("\n")
                     return user_input
