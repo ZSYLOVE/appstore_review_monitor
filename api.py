@@ -2,7 +2,7 @@ import os
 from typing import Optional, Tuple
 
 from .auth import make_token, read_p8_key
-from .constants import APPROVED_STATES, DELISTED_STATES
+from .constants import APPROVED_STATES, DELISTED_STATES, PIPELINE_STATES, REJECTED_STATES
 from .session import apple_headers, get_aux_session, get_session, get_with_backoff, jitter
 
 
@@ -69,37 +69,63 @@ def version_store_state(attributes: dict) -> str:
     return new or "UNKNOWN_STATE"
 
 
-def pick_monitor_version(versions: list, preferred_version: Optional[str] = None) -> Optional[dict]:
+def pick_monitor_version(
+    versions: list,
+    preferred_version: Optional[str] = None,
+    *,
+    purpose: str = "pending",
+) -> Optional[dict]:
     """
-    选择用于监控的版本，避免只取 versions[0] 漏掉已上架/已下架版本。
-    优先级：记录版本(仍上架/下架) → 下架态 → 已上架态 → 其余第一个。
+    选择用于监控的版本。
+    - pending：必须跟住所跟踪/审核中的版本，绝不能因存在旧的 READY_FOR_SALE 而误报过审
+    - approved：优先记录版本 / 下架 / 在架版本
     """
     if not versions:
         return None
 
+    def _state(v: dict) -> str:
+        return version_store_state(v.get("attributes") or {})
+
+    def _ver(v: dict) -> str:
+        return str((v.get("attributes") or {}).get("versionString") or "")
+
     if preferred_version:
         for v in versions:
-            attrs = v.get("attributes") or {}
-            vs = attrs.get("versionString")
-            if vs and str(vs) == str(preferred_version):
-                st = version_store_state(attrs)
-                if st in APPROVED_STATES or st in DELISTED_STATES:
-                    return v
+            if _ver(v) != str(preferred_version):
+                continue
+            st = _state(v)
+            if st == "REPLACED_WITH_NEW_VERSION":
                 break
+            # 待监控：只要还是这个版本号就继续跟，哪怕仍在审/被拒
+            if purpose == "pending":
+                return v
+            if st in APPROVED_STATES or st in DELISTED_STATES:
+                return v
+            break
 
-    delisted = []
-    approved = []
+    by_state = {}
     for v in versions:
-        st = version_store_state(v.get("attributes") or {})
-        if st in DELISTED_STATES:
-            delisted.append(v)
-        elif st in APPROVED_STATES:
-            approved.append(v)
+        by_state.setdefault(_state(v), []).append(v)
 
-    if delisted:
-        return delisted[0]
-    if approved:
-        return approved[0]
+    if purpose == "approved":
+        for st in DELISTED_STATES:
+            if by_state.get(st):
+                return by_state[st][0]
+        for st in APPROVED_STATES:
+            if by_state.get(st):
+                return by_state[st][0]
+        return versions[0]
+
+    # pending：审核管线 > 被拒 > 已上架（仅当没有在审版本，例如首次过审）
+    for st in PIPELINE_STATES:
+        if by_state.get(st):
+            return by_state[st][0]
+    for st in REJECTED_STATES:
+        if by_state.get(st):
+            return by_state[st][0]
+    for st in APPROVED_STATES:
+        if by_state.get(st):
+            return by_state[st][0]
     return versions[0]
 
 

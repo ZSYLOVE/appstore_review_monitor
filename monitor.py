@@ -31,6 +31,7 @@ from .constants import (
     CONFIG_FILE,
     DEFAULT_APPROVED_CHECK_INTERVAL,
     DELISTED_STATES,
+    PIPELINE_STATES,
     REJECTED_STATES,
 )
 from .notify import (
@@ -611,7 +612,9 @@ def run_monitor_loop(
                             else None
                         )
                         latest_version = delisted_hit or pick_monitor_version(
-                            versions, preferred
+                            versions,
+                            preferred,
+                            purpose="approved" if source == "APPROVED_APPS" else "pending",
                         )
                         attributes = latest_version.get("attributes", {})
                         version_string = attributes.get("versionString", "未知版本")
@@ -788,32 +791,77 @@ def run_monitor_loop(
                                 apps[:] = config.get("APPS", [])
                                 config_dirty = True
                         elif app_store_state in APPROVED_STATES:
-                            if should_emit:
+                            # 仍有其它版本在审/被拒时，当前 READY 多半是旧上架版，禁止误报过审
+                            sibling_in_flight = False
+                            for v in versions:
+                                attrs = v.get("attributes") or {}
+                                vs = str(attrs.get("versionString") or "")
+                                st = version_store_state(attrs)
+                                if vs == str(version_string):
+                                    continue
+                                if st in PIPELINE_STATES or st in REJECTED_STATES:
+                                    sibling_in_flight = True
+                                    break
+                            if sibling_in_flight:
                                 ensure_round_banner()
-                                print("  🎉🎉🎉 太棒了！审核通过！")
-                                if auto_remove:
-                                    print("  ✨ 已从监控列表移除（AUTO_REMOVE_ON_APPROVE=true）。")
-                                else:
-                                    print("  ✨ 已移入「已过审」列表，继续监控下架与新版本。")
-                            log_event(
-                                app_id,
-                                app_name,
-                                "✅ 审核通过！" + ("已删除。" if auto_remove else "已归档至已过审列表。"),
-                                app.get("MONITOR_DIR"),
-                            )
-                            if state_changed:
-                                notify_success(app_id, app_name, pushplus_token, feishu_webhook)
-                            state["is_done"] = True
-                            if auto_remove:
-                                config["APPS"] = [
-                                    a for a in config.get("APPS", []) if a.get("APP_ID") != app_id
-                                ]
+                                if not header_printed:
+                                    print(
+                                        f"\n🔍 [第{round_no}轮·{list_tag}] "
+                                        f"正在检查 {app_name} (ID: {app_id})..."
+                                    )
+                                    header_printed = True
+                                print(
+                                    "  ⚠️ 检测到仍有版本在审/处理中，"
+                                    "当前上架态视为旧版本，继续跟踪审核中的版本。"
+                                )
+                                # 改跟审核管线版本，本轮不归档
+                                pipeline_v = pick_monitor_version(
+                                    versions, preferred, purpose="pending"
+                                )
+                                if pipeline_v is not None:
+                                    pattrs = pipeline_v.get("attributes") or {}
+                                    version_string = pattrs.get("versionString", version_string)
+                                    app_store_state = version_store_state(pattrs)
+                                    state["last_state"] = app_store_state
+                                    state["last_version"] = version_string
+                                    app["LAST_STORE_STATE"] = app_store_state
+                                    app["LAST_VERSION_STRING"] = version_string
+                                    config_dirty = True
+                                state["next_sleep_time"] = int(app.get("CHECK_INTERVAL", 600))
                             else:
-                                archive_approved_app(config, app, version_string, app_store_state)
-                                state["source"] = "APPROVED_APPS"
-                                state["is_done"] = False
-                            apps[:] = config.get("APPS", [])
-                            config_dirty = True
+                                if should_emit:
+                                    ensure_round_banner()
+                                    print("  🎉🎉🎉 太棒了！审核通过！")
+                                    if auto_remove:
+                                        print("  ✨ 已从监控列表移除（AUTO_REMOVE_ON_APPROVE=true）。")
+                                    else:
+                                        print("  ✨ 已移入「已过审」列表，继续监控下架与新版本。")
+                                log_event(
+                                    app_id,
+                                    app_name,
+                                    "✅ 审核通过！"
+                                    + ("已删除。" if auto_remove else "已归档至已过审列表。"),
+                                    app.get("MONITOR_DIR"),
+                                )
+                                if state_changed:
+                                    notify_success(
+                                        app_id, app_name, pushplus_token, feishu_webhook
+                                    )
+                                state["is_done"] = True
+                                if auto_remove:
+                                    config["APPS"] = [
+                                        a
+                                        for a in config.get("APPS", [])
+                                        if a.get("APP_ID") != app_id
+                                    ]
+                                else:
+                                    archive_approved_app(
+                                        config, app, version_string, app_store_state
+                                    )
+                                    state["source"] = "APPROVED_APPS"
+                                    state["is_done"] = False
+                                apps[:] = config.get("APPS", [])
+                                config_dirty = True
                         elif app_store_state in REJECTED_STATES:
                             if should_emit and not state_changed:
                                 ensure_round_banner()

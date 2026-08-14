@@ -59,6 +59,19 @@ APPROVED_STATES = [
 REJECTED_STATES = ["REJECTED", "METADATA_REJECTED", "DEVELOPER_REJECTED", "INVALID_BINARY"]
 DELISTED_STATES = ["REMOVED_FROM_SALE", "DEVELOPER_REMOVED_FROM_SALE"]
 
+# 待监控优先跟踪这些「审核管线」状态，避免误选旧的已上架版本
+PIPELINE_STATES = [
+    "IN_REVIEW",
+    "WAITING_FOR_REVIEW",
+    "READY_FOR_REVIEW",
+    "PENDING_APPLE_RELEASE",
+    "PROCESSING_FOR_APP_STORE",
+    "PROCESSING_FOR_DISTRIBUTION",
+    "WAITING_FOR_EXPORT_COMPLIANCE",
+    "PENDING_CONTRACT",
+    "PREPARE_FOR_SUBMISSION",
+]
+
 # 不含 sec-fetch-site：该字段随请求场景在 apple_headers() 中设置（same-site）
 CHROME_BASE_HEADERS = {
     "sec-ch-ua":                 '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
