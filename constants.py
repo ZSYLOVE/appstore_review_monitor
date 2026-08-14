@@ -16,8 +16,8 @@ DEFAULT_UPDATE_REPO = "ZSYLOVE/appstore_review_monitor"
 CHECK_INTERVAL_RANDOM_MIN = 300
 CHECK_INTERVAL_RANDOM_MAX = 720
 
-# 已过审应用默认巡查间隔（秒）：不与待监控同频，默认每天一次
-DEFAULT_APPROVED_CHECK_INTERVAL = 86400
+# 已过审应用默认巡查间隔（秒）：不与待监控同频；无变化静默，可偏勤以抓下架/封号
+DEFAULT_APPROVED_CHECK_INTERVAL = 3600
 APPROVED_CHECK_INTERVAL_MIN = 3600
 
 # 静态兜底；正常运行时由 fingerprint.generate_run_fingerprint() 每次启动随机覆盖
@@ -25,6 +25,7 @@ DEFAULT_IMPERSONATE_TARGET = "chrome131"
 
 APP_STORE_STATES = {
     "READY_FOR_SALE":                   "🟢 已上架 (Ready for Sale) - 恭喜！审核已通过并上架！",
+    "READY_FOR_DISTRIBUTION":           "🟢 可供分发 (Ready for Distribution) - 版本可发布；是否在架需看定价与供应情况",
     "PREPARE_FOR_SUBMISSION":           "📝 准备提交 (Prepare for Submission)",
     "WAITING_FOR_REVIEW":               "⏳ 等待审核 (Waiting for Review)",
     "IN_REVIEW":                        "🔍 正在审核 (In Review)",
@@ -32,6 +33,7 @@ APP_STORE_STATES = {
     "WAITING_FOR_EXPORT_COMPLIANCE":    "⚠️ 等待出口合规 (Waiting for Export Compliance)",
     "PENDING_DEVELOPER_RELEASE":        "🟡 待开发者发布 (Pending Developer Release) - 审核已通过",
     "PROCESSING_FOR_APP_STORE":         "⚙️ 处理中 (Processing for App Store)",
+    "PROCESSING_FOR_DISTRIBUTION":      "⚙️ 分发处理中 (Processing for Distribution)",
     "PENDING_APPLE_RELEASE":            "⏳ 等待苹果发布 (Pending Apple Release)",
     "REJECTED":                         "🔴 被拒绝 (Rejected) - 很遗憾,App 被拒了，请查看被拒邮件。",
     "DEVELOPER_REJECTED":               "🔴 开发者撤回 (Developer Rejected)",
@@ -46,7 +48,14 @@ APP_STORE_STATES = {
     "NOT_APPLICABLE":                   "➖ 不适用 (Not Applicable)",
 }
 
-APPROVED_STATES = ["READY_FOR_SALE", "PENDING_DEVELOPER_RELEASE", "PREORDER_READY_FOR_SALE", "ACCEPTED"]
+# 含新版 appVersionState：苹果已去掉「Removed from Sale」版本态，下架需另查可售性/商店页
+APPROVED_STATES = [
+    "READY_FOR_SALE",
+    "READY_FOR_DISTRIBUTION",
+    "PENDING_DEVELOPER_RELEASE",
+    "PREORDER_READY_FOR_SALE",
+    "ACCEPTED",
+]
 REJECTED_STATES = ["REJECTED", "METADATA_REJECTED", "DEVELOPER_REJECTED", "INVALID_BINARY"]
 DELISTED_STATES = ["REMOVED_FROM_SALE", "DEVELOPER_REMOVED_FROM_SALE"]
 

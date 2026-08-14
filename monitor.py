@@ -9,8 +9,7 @@ import psutil
 
 from .api import (
     apple_error_detail,
-    check_asc_territory_for_sale,
-    check_itunes_store_presence,
+    detect_off_store,
     find_delisted_version,
     pick_monitor_version,
     version_store_state,
@@ -187,6 +186,9 @@ def _parse_check_at(value) -> float:
 
 
 def _approved_is_due(app: dict, state: dict, config: dict, now_ts: float) -> bool:
+    # 进程启动后先强制巡查一轮，避免 24h 间隔导致刚下架完全看不到
+    if state.get("startup_check_pending"):
+        return True
     next_due = state.get("next_due_at")
     if next_due is not None:
         return now_ts >= float(next_due)
@@ -208,6 +210,7 @@ def _mark_approved_checked(app: dict, state: dict, config: dict, *, success: boo
     wait = interval if success else min(3600, interval)
     state["next_due_at"] = now_ts + wait
     state["next_sleep_time"] = wait
+    state["startup_check_pending"] = False
     if success:
         app["LAST_APPROVED_CHECK_AT"] = now.strftime("%Y-%m-%d %H:%M:%S")
 
@@ -270,6 +273,8 @@ def _ensure_app_state(app_id, app, source, app_states):
         "source": source,
         "auth_fail_streak": 0,
         "access_lost_notified": False,
+        # 每次进程启动，已过审先查一轮（下架/封号）
+        "startup_check_pending": source == "APPROVED_APPS",
     }
     return app_states[app_id]
 
@@ -398,8 +403,8 @@ def run_monitor_loop(
                 ),
             )
             print(
-                f"💡 已过审应用统一每 {hours} 小时巡查一次（不与待监控同频），"
-                "下架/新版本时才会通知；按 M 可改统一间隔。"
+                f"💡 已过审应用统一每 {hours} 小时巡查一次（不与待监控同频；无变化静默），"
+                "下架/封号以商店可售性+公开页为准（版本态已不再显示 Removed from Sale）；按 M 可改间隔。"
             )
         update_tip = pending_update_hint()
         if update_tip:
@@ -616,27 +621,24 @@ def run_monitor_loop(
                         )
                         delist_reason = ""
 
-                        # 已过审：版本仍显示上架时，用可售性 + 商店公开页二次确认（封号/强制下架常见）
-                        if (
-                            source == "APPROVED_APPS"
-                            and app_store_state in APPROVED_STATES
-                            and app_store_state not in DELISTED_STATES
-                        ):
-                            for_sale = check_asc_territory_for_sale(app_id, h)
-                            if for_sale is False:
+                        # 已过审：苹果已取消 Removed from Sale 版本态，必须查可售性 + 商店公开页
+                        if source == "APPROVED_APPS" and app_store_state not in DELISTED_STATES:
+                            off, off_reason = detect_off_store(app_id, h)
+                            if off is True:
                                 app_store_state = "REMOVED_FROM_SALE"
                                 friendly_state = APP_STORE_STATES.get(
                                     app_store_state, friendly_state
                                 )
-                                delist_reason = "各地区均不可售（可能开发者下架或账号受限）"
-                            else:
-                                present = check_itunes_store_presence(app_id)
-                                if present is False:
-                                    app_store_state = "REMOVED_FROM_SALE"
-                                    friendly_state = APP_STORE_STATES.get(
-                                        app_store_state, friendly_state
+                                delist_reason = off_reason
+                            elif off is None and off_reason and not compact:
+                                ensure_round_banner()
+                                if not header_printed:
+                                    print(
+                                        f"\n🔍 [第{round_no}轮·{list_tag}] "
+                                        f"正在检查 {app_name} (ID: {app_id})..."
                                     )
-                                    delist_reason = "App Store 公开页已查无（可能封号或强制下架）"
+                                    header_printed = True
+                                print(f"  ⚠️ {off_reason}")
 
                         last_state = state["last_state"]
                         last_version = state["last_version"]

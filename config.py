@@ -69,6 +69,13 @@ def apply_config_defaults(config: dict) -> dict:
         config["COMPACT_OUTPUT"] = False
     if "DEFAULT_APPROVED_CHECK_INTERVAL" not in config:
         config["DEFAULT_APPROVED_CHECK_INTERVAL"] = DEFAULT_APPROVED_CHECK_INTERVAL
+    else:
+        try:
+            # 旧默认「每天一次」对下架/封号过慢；无变化本就会静默，改为每小时
+            if int(config.get("DEFAULT_APPROVED_CHECK_INTERVAL") or 0) == 86400:
+                config["DEFAULT_APPROVED_CHECK_INTERVAL"] = DEFAULT_APPROVED_CHECK_INTERVAL
+        except (TypeError, ValueError):
+            config["DEFAULT_APPROVED_CHECK_INTERVAL"] = DEFAULT_APPROVED_CHECK_INTERVAL
     if "UPDATE_REPO" not in config or not str(config.get("UPDATE_REPO", "")).strip():
         env_repo = os.environ.get("APPSTORE_MONITOR_UPDATE_REPO", "").strip()
         config["UPDATE_REPO"] = env_repo or DEFAULT_UPDATE_REPO

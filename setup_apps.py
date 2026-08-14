@@ -39,7 +39,7 @@ def edit_global_settings(config: dict, config_path: str = None) -> None:
     try:
         new_interval = int(float(new_hours) * 3600)
         if new_interval < 3600:
-            print("⚠️ 不能低于 1 小时，已重置为 24 小时")
+            print("⚠️ 不能低于 1 小时，已重置为默认间隔")
             new_interval = DEFAULT_APPROVED_CHECK_INTERVAL
     except ValueError:
         new_interval = interval

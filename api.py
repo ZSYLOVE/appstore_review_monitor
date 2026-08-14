@@ -1,5 +1,5 @@
 import os
-from typing import Optional
+from typing import Optional, Tuple
 
 from .auth import make_token, read_p8_key
 from .constants import APPROVED_STATES, DELISTED_STATES
@@ -53,29 +53,39 @@ def fetch_app_name_sync(app: dict) -> str:
 
 
 def version_store_state(attributes: dict) -> str:
-    """兼容 appStoreState（旧）与 appVersionState（新）。"""
+    """
+    兼容 appStoreState（旧）与 appVersionState（新）。
+    苹果已移除「Removed from Sale」版本态；下架后常仍为 READY_FOR_SALE / READY_FOR_DISTRIBUTION。
+    """
     if not attributes:
         return "UNKNOWN_STATE"
-    return (
-        attributes.get("appStoreState")
-        or attributes.get("appVersionState")
-        or "UNKNOWN_STATE"
-    )
+    old = attributes.get("appStoreState")
+    new = attributes.get("appVersionState")
+    # 旧字段若仍带下架态，优先采用
+    if old in DELISTED_STATES:
+        return old
+    if old:
+        return old
+    return new or "UNKNOWN_STATE"
 
 
 def pick_monitor_version(versions: list, preferred_version: Optional[str] = None) -> Optional[dict]:
     """
     选择用于监控的版本，避免只取 versions[0] 漏掉已上架/已下架版本。
-    优先级：记录版本 → 下架态 → 已上架态 → 其余第一个。
+    优先级：记录版本(仍上架/下架) → 下架态 → 已上架态 → 其余第一个。
     """
     if not versions:
         return None
 
     if preferred_version:
         for v in versions:
-            vs = (v.get("attributes") or {}).get("versionString")
+            attrs = v.get("attributes") or {}
+            vs = attrs.get("versionString")
             if vs and str(vs) == str(preferred_version):
-                return v
+                st = version_store_state(attrs)
+                if st in APPROVED_STATES or st in DELISTED_STATES:
+                    return v
+                break
 
     delisted = []
     approved = []
@@ -94,7 +104,7 @@ def pick_monitor_version(versions: list, preferred_version: Optional[str] = None
 
 
 def find_delisted_version(versions: list) -> Optional[dict]:
-    """在返回的版本列表中查找任一已下架状态。"""
+    """在返回的版本列表中查找任一已下架状态（旧 API 字段）。"""
     for v in versions or []:
         st = version_store_state(v.get("attributes") or {})
         if st in DELISTED_STATES:
@@ -102,28 +112,48 @@ def find_delisted_version(versions: list) -> Optional[dict]:
     return None
 
 
+def _itunes_lookup_result_count(session, url: str) -> Optional[int]:
+    try:
+        resp = session.get(url, timeout=12)
+        if resp.status_code != 200:
+            return None
+        data = resp.json()
+        return int(data.get("resultCount") or 0)
+    except Exception:
+        return None
+
+
 def check_itunes_store_presence(app_id: str) -> Optional[bool]:
     """
     通过 iTunes Lookup 判断应用是否仍在商店可见。
     True=在架，False=cn/us 均查无，None=探测失败（勿当下来结论）。
-    封号/强制下架后常仍能在 ASC 看到 READY_FOR_SALE，但商店页已消失。
+    封号/强制下架/开发者下架后，ASC 版本态常仍显示可供分发，但商店页会消失。
     """
     if not app_id:
         return None
-    session = get_aux_session()
+    try:
+        session = get_aux_session()
+    except Exception:
+        session = None
+    if session is None:
+        return None
+
     empty_ok = 0
-    for country in ("cn", "us"):
-        try:
-            url = f"https://itunes.apple.com/{country}/lookup?id={app_id}"
-            resp = session.get(url, timeout=12)
-            if resp.status_code != 200:
-                return None
-            data = resp.json()
-            if int(data.get("resultCount") or 0) > 0:
-                return True
-            empty_ok += 1
-        except Exception:
+    urls = [
+        f"https://itunes.apple.com/cn/lookup?id={app_id}",
+        f"https://itunes.apple.com/us/lookup?id={app_id}",
+    ]
+    for url in urls:
+        count = _itunes_lookup_result_count(session, url)
+        if count is None:
+            # 无国家路径再试一次
+            fallback = f"https://itunes.apple.com/lookup?id={app_id}&country={url.split('/')[3]}"
+            count = _itunes_lookup_result_count(session, fallback)
+        if count is None:
             return None
+        if count > 0:
+            return True
+        empty_ok += 1
     if empty_ok >= 2:
         return False
     return None
@@ -131,45 +161,104 @@ def check_itunes_store_presence(app_id: str) -> Optional[bool]:
 
 def check_asc_territory_for_sale(app_id: str, headers: dict) -> Optional[bool]:
     """
-    读取 ASC v2 区域可售性。True=至少一区可售，False=明确不可售，None=无法判断。
-    开发者下架后版本状态可能仍是 READY_FOR_SALE，需用此接口辅助。
+    读取 ASC 区域可售性。True=至少一区可售，False=明确不可售，None=无法判断。
+    开发者下架后版本状态可能仍是 READY_FOR_SALE / READY_FOR_DISTRIBUTION。
     """
     if not app_id:
         return None
-    url = (
-        f"https://api.appstoreconnect.apple.com/v2/appAvailabilities/{app_id}"
-        f"/territoryAvailabilities?limit=200"
-    )
-    try:
-        jitter()
-        resp = get_with_backoff(url, headers)
-    except Exception:
-        return None
-    if resp.status_code == 404:
-        return None
-    if resp.status_code != 200:
-        return None
-    try:
-        items = resp.json().get("data") or []
-    except Exception:
+
+    candidates = [
+        (
+            f"https://api.appstoreconnect.apple.com/v2/appAvailabilities/{app_id}"
+            f"/territoryAvailabilities?limit=200"
+        ),
+        (
+            f"https://api.appstoreconnect.apple.com/v1/apps/{app_id}/appAvailability"
+        ),
+    ]
+    items = None
+    for url in candidates:
+        try:
+            jitter()
+            resp = get_with_backoff(url, headers)
+        except Exception:
+            continue
+        if resp.status_code == 404:
+            continue
+        if resp.status_code != 200:
+            continue
+        try:
+            body = resp.json()
+        except Exception:
+            continue
+        data = body.get("data")
+        if isinstance(data, list):
+            items = data
+            break
+        if isinstance(data, dict):
+            # v1 appAvailability 单对象：再拉 territory 关系或看 attributes
+            rel = (data.get("relationships") or {}).get("territoryAvailabilities") or {}
+            rel_id = (data.get("id") or app_id)
+            turl = (
+                f"https://api.appstoreconnect.apple.com/v2/appAvailabilities/{rel_id}"
+                f"/territoryAvailabilities?limit=200"
+            )
+            try:
+                jitter()
+                tresp = get_with_backoff(turl, headers)
+                if tresp.status_code == 200:
+                    items = tresp.json().get("data") or []
+                    break
+            except Exception:
+                pass
+            attrs = data.get("attributes") or {}
+            if "availableInNewTerritories" in attrs and not items:
+                # 无分区明细时无法可靠判断，继续尝试其它端点
+                continue
+    if items is None:
         return None
     if not items:
         return False
 
-    any_available = False
-    any_cannot_sell = False
+    sellable = 0
     for item in items:
         attrs = item.get("attributes") or {}
-        if attrs.get("available") is True:
-            any_available = True
-        statuses = attrs.get("contentStatuses") or []
+        statuses = set(attrs.get("contentStatuses") or [])
         if "CANNOT_SELL" in statuses:
-            any_cannot_sell = True
+            continue
+        if attrs.get("available") is True or "AVAILABLE" in statuses:
+            sellable += 1
+        elif attrs.get("available") is False:
+            continue
+        elif statuses & {
+            "AVAILABLE_FOR_PREORDER",
+            "AVAILABLE_FOR_PREORDER_ON_DATE",
+            "PROCESSING_TO_AVAILABLE",
+        }:
+            sellable += 1
 
-    if any_available:
+    if sellable > 0:
         return True
-    if any_cannot_sell or all(
-        (it.get("attributes") or {}).get("available") is False for it in items
-    ):
-        return False
-    return None
+    return False
+
+
+def detect_off_store(
+    app_id: str, headers: dict
+) -> Tuple[Optional[bool], str]:
+    """
+    综合 ASC 可售性 + iTunes 公开页判断是否已不在架。
+    返回 (True, reason) / (False, '') / (None, 说明)。
+    任一信号明确不可售即视为下架（版本态已不再表示 Removed from Sale）。
+    """
+    for_sale = check_asc_territory_for_sale(app_id, headers)
+    present = check_itunes_store_presence(app_id)
+
+    if for_sale is False and present is False:
+        return True, "ASC 各地区不可售，且 App Store 公开页查无"
+    if for_sale is False:
+        return True, "ASC 各地区不可售（开发者下架或账号受限）"
+    if present is False:
+        return True, "App Store 公开页查无（可能封号或强制下架）"
+    if for_sale is None and present is None:
+        return None, "在架探测失败（ASC 可售性与商店页均不可用）"
+    return False, ""
