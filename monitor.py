@@ -58,6 +58,7 @@ MONITOR_LOCK_FILE = os.path.join(APP_DATA_DIR, ".monitor.lock")
 _lock_handle = None
 _lock_path = None
 _lock_handlers_registered = False
+_interrupt_hits = 0
 
 
 def _lock_pid_alive(pid: int) -> bool:
@@ -97,16 +98,14 @@ def release_monitor_lock() -> None:
             os.remove(_lock_path)
         except OSError:
             pass
-
-
-def _exit_with_lock_release(message: str = "", code: int = 0) -> None:
-    if message:
-        print(message)
-    release_monitor_lock()
-    sys.exit(code)
+        _lock_path = None
 
 
 def _register_lock_handlers() -> None:
+    """
+    信号回调里禁止做 I/O / 释放锁（异步信号不安全，Ctrl+C 易卡死）。
+    只抛 KeyboardInterrupt，由主循环 finally 释放锁。
+    """
     global _lock_handlers_registered
     if _lock_handlers_registered:
         return
@@ -114,18 +113,20 @@ def _register_lock_handlers() -> None:
     atexit.register(release_monitor_lock)
 
     def _on_interrupt(signum, frame):
-        sig_name = "Ctrl+C" if signum == signal.SIGINT else "停止信号"
-        _exit_with_lock_release(f"\n\n⏹️ 监控已停止（{sig_name}，已释放锁文件）。", 0)
-
-    def _on_sigtstp(signum, frame):
-        _exit_with_lock_release(
-            "\n\n⏹️ 监控已停止（Ctrl+Z，已释放锁文件）。下次可直接重新启动。",
-            0,
-        )
+        global _interrupt_hits
+        _interrupt_hits += 1
+        # 连按两次：强制退出（应对卡在原生网络库里的情况）
+        if _interrupt_hits >= 2:
+            try:
+                release_monitor_lock()
+            except Exception:
+                pass
+            os._exit(130)
+        raise KeyboardInterrupt
 
     signal.signal(signal.SIGINT, _on_interrupt)
     signal.signal(signal.SIGTERM, _on_interrupt)
-    signal.signal(signal.SIGTSTP, _on_sigtstp)
+    signal.signal(signal.SIGTSTP, _on_interrupt)
 
 
 def _acquire_single_instance_lock(config_path: str = None):
@@ -161,7 +162,7 @@ def _acquire_single_instance_lock(config_path: str = None):
                 pass
             print(f"   可执行: kill {holder_pid}")
         print(f"   或手动删除锁文件: {lock_path}")
-        print("   💡 提示: Ctrl+Z 会先释放锁再退出；Ctrl+C 同样会释放锁。")
+        print("   💡 提示: Ctrl+C 可退出并释放锁；卡死时连按两次强制退出。")
         sys.exit(1)
 
     lock_handle.write(str(os.getpid()))
@@ -214,6 +215,21 @@ def _mark_approved_checked(app: dict, state: dict, config: dict, *, success: boo
     state["startup_check_pending"] = False
     if success:
         app["LAST_APPROVED_CHECK_AT"] = now.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _force_approved_check_now(config: dict, app_states: dict) -> bool:
+    """将所有已过审标记为立即到期，用于 N 键立刻查下架。"""
+    approved = config.get("APPROVED_APPS") or []
+    if not approved:
+        print("⚠️ 当前没有已过审应用可检查。")
+        return False
+    now_ts = datetime.now().timestamp()
+    for app in approved:
+        state = _ensure_app_state(app["APP_ID"], app, "APPROVED_APPS", app_states)
+        state["startup_check_pending"] = True
+        state["next_due_at"] = now_ts
+    print(f"🔍 立即巡查 {len(approved)} 个已过审应用是否下架/封号...")
+    return True
 
 
 def _collect_monitor_targets(config, app_states):
@@ -371,9 +387,36 @@ def run_monitor_loop(
     interactive: bool = True,
 ):
     auto_remove = bool(config.get("AUTO_REMOVE_ON_APPROVE", False))
-    _lock_handle = _acquire_single_instance_lock(config_path or CONFIG_FILE)
+    _acquire_single_instance_lock(config_path or CONFIG_FILE)
     pending_interactive = "add" if interactive else None
 
+    try:
+        _run_monitor_loop_inner(
+            config,
+            apps,
+            config_path=config_path,
+            check_once=check_once,
+            interactive=interactive,
+            auto_remove=auto_remove,
+            pending_interactive=pending_interactive,
+        )
+    except KeyboardInterrupt:
+        print("\n\n⏹️ 监控已停止（Ctrl+C，已释放锁文件）。再见！", flush=True)
+        raise SystemExit(0)
+    finally:
+        release_monitor_lock()
+
+
+def _run_monitor_loop_inner(
+    config,
+    apps,
+    *,
+    config_path: str = None,
+    check_once: bool = False,
+    interactive: bool = True,
+    auto_remove: bool = False,
+    pending_interactive=None,
+):
     while True:
         if interactive and pending_interactive == "add":
             interactive_add_apps(config, apps, config_path)
@@ -387,11 +430,12 @@ def run_monitor_loop(
 
         if not config.get("APPS") and not config.get("APPROVED_APPS"):
             print("⚠️ 未配置任何需要监控的应用，脚本退出。")
-            sys.exit(0)
+            raise SystemExit(0)
 
         print("\n✅ 配置读取完毕，开始进入多应用 24 小时监控模式...")
         if interactive:
-            print("💡 倒计时期间: [R 添加] [E 修改] [D 移除] [M 全局] [U 更新]（键+回车）")
+            print("💡 倒计时期间: [R 添加] [E 修改] [D 移除] [M 全局] [N 查下架] [U 更新]（键+回车）")
+            print("💡 随时 Ctrl+C 可退出（卡死时连按两次强制退出）")
         if config.get("APPROVED_APPS"):
             hours = max(
                 1,
@@ -412,6 +456,7 @@ def run_monitor_loop(
             print(f"💡 {update_tip} —— 倒计时期间按 U+回车可立即更新")
 
         app_states = {}
+        n_approved_only = False
 
         interrupted = False
         round_no = 0
@@ -440,6 +485,13 @@ def run_monitor_loop(
                 print("=========================================")
 
             monitor_targets = _collect_monitor_targets(config, app_states)
+            if n_approved_only:
+                monitor_targets = [
+                    (app, source)
+                    for app, source in monitor_targets
+                    if source == "APPROVED_APPS"
+                ]
+                n_approved_only = False
             has_pending = any(source == "APPS" for _, source in monitor_targets)
 
             if not compact and has_pending:
@@ -463,6 +515,10 @@ def run_monitor_loop(
                     )
                     if cmd == "U":
                         apply_pending_update_now()
+                        continue
+                    if cmd == "N":
+                        if _force_approved_check_now(config, app_states):
+                            n_approved_only = True
                         continue
                     if cmd == "R":
                         pending_interactive = "add"
@@ -966,6 +1022,10 @@ def run_monitor_loop(
             )
             if cmd == "U":
                 apply_pending_update_now()
+                continue
+            if cmd == "N":
+                if _force_approved_check_now(config, app_states):
+                    n_approved_only = True
                 continue
             if cmd == "R":
                 print("\n🔄 [用户打断] 您按下了 R 键。即将进入添加应用模式...")

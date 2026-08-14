@@ -93,7 +93,10 @@ def countdown_sleep(
 ):
     print()
     if not interactive or not sys.stdin.isatty():
-        time.sleep(seconds)
+        try:
+            time.sleep(seconds)
+        except KeyboardInterrupt:
+            raise
         return False
     set_countdown_active(True)
     try:
@@ -106,13 +109,16 @@ def countdown_sleep(
                 u_key = "[U 更新]"
             sys.stdout.write(
                 f"\r\033[K{tag}⏳ 距离下次查询还剩: {remaining // 60:02d}分 {remaining % 60:02d}秒 "
-                f"[R 添加] [E 修改] [D 移除] [M 全局] {u_key}... "
+                f"[R 添加] [E 修改] [D 移除] [M 全局] [N 查下架] {u_key}... "
             )
             sys.stdout.flush()
-            i, o, e = select.select([sys.stdin], [], [], 1)
+            try:
+                i, o, e = select.select([sys.stdin], [], [], 1)
+            except (InterruptedError, select.error):
+                raise KeyboardInterrupt
             if i:
                 user_input = sys.stdin.readline().strip().upper()
-                if user_input in ("R", "E", "D", "M", "U"):
+                if user_input in ("R", "E", "D", "M", "U", "N"):
                     sys.stdout.write("\r\033[K")
                     print("\n")
                     return user_input
@@ -121,8 +127,8 @@ def countdown_sleep(
         return False
     except KeyboardInterrupt:
         sys.stdout.write("\r\033[K")
-        print("\n\n⏹️ 监控已手动停止。再见！")
-        sys.exit(0)
+        sys.stdout.flush()
+        raise
     finally:
         set_countdown_active(False)
 
