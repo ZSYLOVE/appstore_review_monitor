@@ -313,10 +313,11 @@ def _handle_auth_failure(
     pushplus_token,
     feishu_webhook,
     ensure_round_banner,
+    progress_tag: str = "",
 ):
     """401/403：已过审连续失败则告警（封号常见表现）。"""
     ensure_round_banner()
-    print(f"\n🔍 [第{round_no}轮·{list_tag}] 正在检查 {app_name} (ID: {app_id})...")
+    print(f"\n🔍 [第{round_no}轮·{list_tag}{progress_tag}] 正在检查 {app_name} (ID: {app_id})...")
     print(f"  ❌ 查询失败 ({status_code}) {detail}")
     print("  🚨 认证失败或 App 未找到，请稍后检查该 App 的配置。")
     print("  💡 倒计时期间按 E+回车 可修改该应用配置。")
@@ -493,6 +494,16 @@ def _run_monitor_loop_inner(
                 ]
                 n_approved_only = False
             has_pending = any(source == "APPS" for _, source in monitor_targets)
+            approved_in_round = [
+                (app, source)
+                for app, source in monitor_targets
+                if source == "APPROVED_APPS"
+            ]
+            approved_total = len(approved_in_round)
+            approved_done = 0
+            if approved_total:
+                ensure_round_banner()
+                print(f"🟢 本轮已过审巡查：共 {approved_total} 个（进度会逐个更新）")
 
             if not compact and has_pending:
                 ensure_round_banner()
@@ -553,6 +564,16 @@ def _run_monitor_loop_inner(
                 header_printed = False
                 need_app_name = is_placeholder_app_name(app_name, app_id)
                 list_tag = "已过审" if source == "APPROVED_APPS" else "待监控"
+                progress_tag = ""
+                if source == "APPROVED_APPS" and approved_total:
+                    approved_done += 1
+                    progress_tag = f" · 进度 {approved_done}/{approved_total}"
+
+                def _approved_header() -> str:
+                    return (
+                        f"\n🔍 [第{round_no}轮·{list_tag}{progress_tag}] "
+                        f"正在检查 {app_name} (ID: {app_id})..."
+                    )
 
                 max_retries = 3
                 approved_check_ok = False
@@ -561,7 +582,7 @@ def _run_monitor_loop_inner(
                         token = get_token_for_app(app)
                     except Exception as e:
                         ensure_round_banner()
-                        print(f"\n🔍 [第{round_no}轮·{list_tag}] 正在检查 {app_name} (ID: {app_id})...")
+                        print(f"\n🔍 [第{round_no}轮·{list_tag}{progress_tag}] 正在检查 {app_name} (ID: {app_id})...")
                         print(f"  ❌ 生成 Token 失败，跳过该应用。请检查 P8 密钥: {e}")
                         print("  💡 倒计时期间按 E+回车 可修改该应用配置。")
                         break
@@ -599,10 +620,11 @@ def _run_monitor_loop_inner(
                                         pushplus_token=pushplus_token,
                                         feishu_webhook=feishu_webhook,
                                         ensure_round_banner=ensure_round_banner,
+                                        progress_tag=progress_tag,
                                     )
                                 else:
                                     ensure_round_banner()
-                                    print(f"\n🔍 [第{round_no}轮·{list_tag}] 正在检查 {app_name} (ID: {app_id})...")
+                                    print(f"\n🔍 [第{round_no}轮·{list_tag}{progress_tag}] 正在检查 {app_name} (ID: {app_id})...")
                                     print(f"  ❌ 查询应用信息失败 ({res_info.status_code}) {detail}")
                                     log_event(
                                         app_id,
@@ -631,10 +653,11 @@ def _run_monitor_loop_inner(
                                     pushplus_token=pushplus_token,
                                     feishu_webhook=feishu_webhook,
                                     ensure_round_banner=ensure_round_banner,
+                                    progress_tag=progress_tag,
                                 )
                             else:
                                 ensure_round_banner()
-                                print(f"\n🔍 [第{round_no}轮·{list_tag}] 正在检查 {app_name} (ID: {app_id})...")
+                                print(f"\n🔍 [第{round_no}轮·{list_tag}{progress_tag}] 正在检查 {app_name} (ID: {app_id})...")
                                 print(f"  ❌ 查询版本状态失败 ({response.status_code}) {detail}")
                                 if response.status_code in (400, 404):
                                     print("  🚨 认证失败或 App 未找到，请稍后检查该 App 的配置。")
@@ -652,7 +675,7 @@ def _run_monitor_loop_inner(
                         if not versions:
                             msg = "⚠️ 未找到任何发布版本信息。"
                             ensure_round_banner()
-                            print(f"\n🔍 [第{round_no}轮·{list_tag}] 正在检查 {app_name} (ID: {app_id})...")
+                            print(f"\n🔍 [第{round_no}轮·{list_tag}{progress_tag}] 正在检查 {app_name} (ID: {app_id})...")
                             print(f"  {msg}")
                             log_event(app_id, app_name, msg, app.get("MONITOR_DIR"))
                             break
@@ -693,7 +716,7 @@ def _run_monitor_loop_inner(
                                 ensure_round_banner()
                                 if not header_printed:
                                     print(
-                                        f"\n🔍 [第{round_no}轮·{list_tag}] "
+                                        f"\n🔍 [第{round_no}轮·{list_tag}{progress_tag}] "
                                         f"正在检查 {app_name} (ID: {app_id})..."
                                     )
                                     header_printed = True
@@ -703,7 +726,7 @@ def _run_monitor_loop_inner(
                         last_version = state["last_version"]
                         state_changed = last_state is not None and last_state != app_store_state
                         version_changed = last_version is not None and last_version != version_string
-                        # 已过审且仍在上架、无变化 → 静默轮询，不刷屏
+                        # 已过审且仍在上架、无变化 → 仅简化输出，仍显示进度
                         silent_approved = (
                             source == "APPROVED_APPS"
                             and last_state is not None
@@ -720,11 +743,21 @@ def _run_monitor_loop_inner(
                                 or version_changed
                             )
                         )
+                        # 已过审始终打出进度行，避免 N 键巡查时“没反应”
+                        if source == "APPROVED_APPS" and not header_printed:
+                            ensure_round_banner()
+                            print(
+                                f"\n🔍 [第{round_no}轮·{list_tag}{progress_tag}] "
+                                f"正在检查 {app_name} (ID: {app_id})..."
+                            )
+                            header_printed = True
+                            if silent_approved:
+                                print(f"  ✅ 仍在架 · v{version_string}")
 
                         if should_emit:
                             ensure_round_banner()
                             if not header_printed:
-                                print(f"\n🔍 [第{round_no}轮·{list_tag}] 正在检查 {app_name} (ID: {app_id})...")
+                                print(f"\n🔍 [第{round_no}轮·{list_tag}{progress_tag}] 正在检查 {app_name} (ID: {app_id})...")
                                 header_printed = True
                             print(f"  📱 版本: {version_string}")
                             print(f"  📌 状态: {friendly_state}")
@@ -749,7 +782,7 @@ def _run_monitor_loop_inner(
                             msg = f"🔔 版本发生变化: v{last_version} -> v{version_string}"
                             ensure_round_banner()
                             if not header_printed:
-                                print(f"\n🔍 [第{round_no}轮·{list_tag}] 正在检查 {app_name} (ID: {app_id})...")
+                                print(f"\n🔍 [第{round_no}轮·{list_tag}{progress_tag}] 正在检查 {app_name} (ID: {app_id})...")
                                 header_printed = True
                             print(f"  {msg}")
                             log_event(app_id, app_name, msg, app.get("MONITOR_DIR"))
@@ -770,7 +803,7 @@ def _run_monitor_loop_inner(
                             msg = f"🔔 状态发生变化: 从 [{old_friendly_state}] -> [{friendly_state}]"
                             ensure_round_banner()
                             if not header_printed:
-                                print(f"\n🔍 [第{round_no}轮·{list_tag}] 正在检查 {app_name} (ID: {app_id})...")
+                                print(f"\n🔍 [第{round_no}轮·{list_tag}{progress_tag}] 正在检查 {app_name} (ID: {app_id})...")
                                 header_printed = True
                             print(f"  {msg}")
                             log_event(app_id, app_name, msg, app.get("MONITOR_DIR"))
@@ -862,7 +895,7 @@ def _run_monitor_loop_inner(
                                 ensure_round_banner()
                                 if not header_printed:
                                     print(
-                                        f"\n🔍 [第{round_no}轮·{list_tag}] "
+                                        f"\n🔍 [第{round_no}轮·{list_tag}{progress_tag}] "
                                         f"正在检查 {app_name} (ID: {app_id})..."
                                     )
                                     header_printed = True
@@ -922,7 +955,7 @@ def _run_monitor_loop_inner(
                             if should_emit and not state_changed:
                                 ensure_round_banner()
                                 if not header_printed:
-                                    print(f"\n🔍 [第{round_no}轮·{list_tag}] 正在检查 {app_name} (ID: {app_id})...")
+                                    print(f"\n🔍 [第{round_no}轮·{list_tag}{progress_tag}] 正在检查 {app_name} (ID: {app_id})...")
                                     header_printed = True
                                 print("  🔴 依然是被拒绝状态。")
 
@@ -930,7 +963,7 @@ def _run_monitor_loop_inner(
 
                     except Exception as e:
                         ensure_round_banner()
-                        print(f"\n🔍 [第{round_no}轮·{list_tag}] 正在检查 {app_name} (ID: {app_id})...")
+                        print(f"\n🔍 [第{round_no}轮·{list_tag}{progress_tag}] 正在检查 {app_name} (ID: {app_id})...")
                         status_code = getattr(getattr(e, "response", None), "status_code", None)
                         if status_code:
                             resp = getattr(e, "response", None)
@@ -949,6 +982,7 @@ def _run_monitor_loop_inner(
                                     pushplus_token=pushplus_token,
                                     feishu_webhook=feishu_webhook,
                                     ensure_round_banner=ensure_round_banner,
+                                    progress_tag=progress_tag,
                                 )
                             else:
                                 print(f"  ❌ 请求苹果接口失败 (状态码: {status_code}) {detail}")

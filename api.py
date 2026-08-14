@@ -244,13 +244,16 @@ def check_asc_territory_for_sale(app_id: str, headers: dict) -> Optional[bool]:
     if items is None:
         return None
     if not items:
-        return False
+        # 空列表常见于权限/端点不匹配，不能当成已下架
+        return None
 
     sellable = 0
+    cannot_sell = 0
     for item in items:
         attrs = item.get("attributes") or {}
         statuses = set(attrs.get("contentStatuses") or [])
         if "CANNOT_SELL" in statuses:
+            cannot_sell += 1
             continue
         if attrs.get("available") is True or "AVAILABLE" in statuses:
             sellable += 1
@@ -265,7 +268,12 @@ def check_asc_territory_for_sale(app_id: str, headers: dict) -> Optional[bool]:
 
     if sellable > 0:
         return True
-    return False
+    # 有分区数据且全部不可售，才判定不在架
+    if cannot_sell > 0 or all(
+        (it.get("attributes") or {}).get("available") is False for it in items
+    ):
+        return False
+    return None
 
 
 def detect_off_store(
@@ -274,17 +282,20 @@ def detect_off_store(
     """
     综合 ASC 可售性 + iTunes 公开页判断是否已不在架。
     返回 (True, reason) / (False, '') / (None, 说明)。
-    任一信号明确不可售即视为下架（版本态已不再表示 Removed from Sale）。
+    以下架归档为准时：以商店公开页为准；ASC 单独不可售不直接归档（易误杀）。
     """
     for_sale = check_asc_territory_for_sale(app_id, headers)
     present = check_itunes_store_presence(app_id)
 
-    if for_sale is False and present is False:
+    if present is False and for_sale is False:
         return True, "ASC 各地区不可售，且 App Store 公开页查无"
-    if for_sale is False:
-        return True, "ASC 各地区不可售（开发者下架或账号受限）"
     if present is False:
         return True, "App Store 公开页查无（可能封号或强制下架）"
+    if for_sale is False and present is True:
+        # 可售性接口偶发误报，商店仍在架则继续观察
+        return False, ""
+    if for_sale is False and present is None:
+        return None, "ASC 显示不可售，但商店页探测失败，暂不下架结论"
     if for_sale is None and present is None:
         return None, "在架探测失败（ASC 可售性与商店页均不可用）"
     return False, ""
