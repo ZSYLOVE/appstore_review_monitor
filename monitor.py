@@ -7,7 +7,14 @@ from datetime import datetime
 
 import psutil
 
-from .api import apple_error_detail
+from .api import (
+    apple_error_detail,
+    check_asc_territory_for_sale,
+    check_itunes_store_presence,
+    find_delisted_version,
+    pick_monitor_version,
+    version_store_state,
+)
 from .auth import get_token_for_app
 from .config import (
     archive_approved_app,
@@ -28,6 +35,7 @@ from .constants import (
     REJECTED_STATES,
 )
 from .notify import (
+    notify_access_lost,
     notify_delisted,
     notify_rejected,
     notify_status_change,
@@ -260,8 +268,92 @@ def _ensure_app_state(app_id, app, source, app_states):
         "next_sleep_time": next_sleep,
         "is_done": False,
         "source": source,
+        "auth_fail_streak": 0,
+        "access_lost_notified": False,
     }
     return app_states[app_id]
+
+
+AUTH_FAIL_NOTIFY_STREAK = 2
+
+
+def _handle_auth_failure(
+    *,
+    app,
+    state,
+    source,
+    app_id,
+    app_name,
+    list_tag,
+    round_no,
+    status_code,
+    detail,
+    pushplus_token,
+    feishu_webhook,
+    ensure_round_banner,
+):
+    """401/403：已过审连续失败则告警（封号常见表现）。"""
+    ensure_round_banner()
+    print(f"\n🔍 [第{round_no}轮·{list_tag}] 正在检查 {app_name} (ID: {app_id})...")
+    print(f"  ❌ 查询失败 ({status_code}) {detail}")
+    print("  🚨 认证失败或 App 未找到，请稍后检查该 App 的配置。")
+    print("  💡 倒计时期间按 E+回车 可修改该应用配置。")
+    log_event(
+        app_id,
+        app_name,
+        f"认证/访问失败: HTTP {status_code} {detail}",
+        app.get("MONITOR_DIR"),
+    )
+    state["auth_fail_streak"] = int(state.get("auth_fail_streak") or 0) + 1
+    if (
+        source == "APPROVED_APPS"
+        and state["auth_fail_streak"] >= AUTH_FAIL_NOTIFY_STREAK
+        and not state.get("access_lost_notified")
+    ):
+        tip = (
+            f"连续 {state['auth_fail_streak']} 次 API 认证失败（HTTP {status_code}），"
+            "可能是密钥失效或开发者账号异常（含封号）"
+        )
+        print(f"  ⚠️ {tip}")
+        notify_access_lost(app_id, app_name, pushplus_token, feishu_webhook, tip)
+        state["access_lost_notified"] = True
+
+
+def _archive_delisted_approved(
+    *,
+    config,
+    app,
+    app_states,
+    app_id,
+    app_name,
+    version_string,
+    app_store_state,
+    friendly_state,
+    pushplus_token,
+    feishu_webhook,
+    reason: str,
+    should_emit: bool,
+    ensure_round_banner,
+):
+    if should_emit:
+        ensure_round_banner()
+        print(f"  ❌ {reason}，移入「已下架」列表并停止监控。")
+    log_event(
+        app_id,
+        app_name,
+        f"❌ 已下架: v{version_string} · {friendly_state} · {reason}",
+        app.get("MONITOR_DIR"),
+    )
+    notify_delisted(
+        app_id,
+        app_name,
+        version_string,
+        pushplus_token,
+        feishu_webhook,
+        reason=reason,
+    )
+    archive_removed_app(config, app, version_string, app_store_state)
+    app_states.pop(app_id, None)
 
 
 def run_monitor_loop(
@@ -431,17 +523,31 @@ def run_monitor_loop(
                                     config_dirty = True
                             else:
                                 detail = apple_error_detail(res_info)
-                                ensure_round_banner()
-                                print(f"\n🔍 [第{round_no}轮·{list_tag}] 正在检查 {app_name} (ID: {app_id})...")
-                                print(f"  ❌ 查询应用信息失败 ({res_info.status_code}) {detail}")
                                 if res_info.status_code in (401, 403):
-                                    print("  💡 认证信息可能有误，倒计时期间按 E+回车 可修改该应用配置。")
-                                log_event(
-                                    app_id,
-                                    app_name,
-                                    f"查询应用失败: HTTP {res_info.status_code} {detail}",
-                                    app.get("MONITOR_DIR"),
-                                )
+                                    _handle_auth_failure(
+                                        app=app,
+                                        state=state,
+                                        source=source,
+                                        app_id=app_id,
+                                        app_name=app_name,
+                                        list_tag=list_tag,
+                                        round_no=round_no,
+                                        status_code=res_info.status_code,
+                                        detail=detail,
+                                        pushplus_token=pushplus_token,
+                                        feishu_webhook=feishu_webhook,
+                                        ensure_round_banner=ensure_round_banner,
+                                    )
+                                else:
+                                    ensure_round_banner()
+                                    print(f"\n🔍 [第{round_no}轮·{list_tag}] 正在检查 {app_name} (ID: {app_id})...")
+                                    print(f"  ❌ 查询应用信息失败 ({res_info.status_code}) {detail}")
+                                    log_event(
+                                        app_id,
+                                        app_name,
+                                        f"查询应用失败: HTTP {res_info.status_code} {detail}",
+                                        app.get("MONITOR_DIR"),
+                                    )
                                 break
                             jitter(400)
 
@@ -449,21 +555,36 @@ def run_monitor_loop(
                         response = get_with_backoff(url, h)
                         if response.status_code != 200:
                             detail = apple_error_detail(response)
-                            ensure_round_banner()
-                            print(f"\n🔍 [第{round_no}轮·{list_tag}] 正在检查 {app_name} (ID: {app_id})...")
-                            print(f"  ❌ 查询版本状态失败 ({response.status_code}) {detail}")
-                            if response.status_code in (400, 401, 403, 404):
-                                print("  🚨 认证失败或 App 未找到，请稍后检查该 App 的配置。")
-                                if response.status_code in (401, 403):
-                                    print("  💡 倒计时期间按 E+回车 可修改该应用配置。")
-                            log_event(
-                                app_id,
-                                app_name,
-                                f"查询版本失败: HTTP {response.status_code} {detail}",
-                                app.get("MONITOR_DIR"),
-                            )
+                            if response.status_code in (401, 403):
+                                _handle_auth_failure(
+                                    app=app,
+                                    state=state,
+                                    source=source,
+                                    app_id=app_id,
+                                    app_name=app_name,
+                                    list_tag=list_tag,
+                                    round_no=round_no,
+                                    status_code=response.status_code,
+                                    detail=detail,
+                                    pushplus_token=pushplus_token,
+                                    feishu_webhook=feishu_webhook,
+                                    ensure_round_banner=ensure_round_banner,
+                                )
+                            else:
+                                ensure_round_banner()
+                                print(f"\n🔍 [第{round_no}轮·{list_tag}] 正在检查 {app_name} (ID: {app_id})...")
+                                print(f"  ❌ 查询版本状态失败 ({response.status_code}) {detail}")
+                                if response.status_code in (400, 404):
+                                    print("  🚨 认证失败或 App 未找到，请稍后检查该 App 的配置。")
+                                log_event(
+                                    app_id,
+                                    app_name,
+                                    f"查询版本失败: HTTP {response.status_code} {detail}",
+                                    app.get("MONITOR_DIR"),
+                                )
                             break
 
+                        state["auth_fail_streak"] = 0
                         data = response.json()
                         versions = data.get("data", [])
                         if not versions:
@@ -474,13 +595,48 @@ def run_monitor_loop(
                             log_event(app_id, app_name, msg, app.get("MONITOR_DIR"))
                             break
 
-                        latest_version = versions[0]
+                        preferred = (
+                            app.get("APPROVED_VERSION")
+                            or app.get("LAST_VERSION_STRING")
+                            or state.get("last_version")
+                        )
+                        delisted_hit = (
+                            find_delisted_version(versions)
+                            if source == "APPROVED_APPS"
+                            else None
+                        )
+                        latest_version = delisted_hit or pick_monitor_version(
+                            versions, preferred
+                        )
                         attributes = latest_version.get("attributes", {})
                         version_string = attributes.get("versionString", "未知版本")
-                        app_store_state = attributes.get("appStoreState", "UNKNOWN_STATE")
+                        app_store_state = version_store_state(attributes)
                         friendly_state = APP_STORE_STATES.get(
                             app_store_state, f"❓ 未知状态 ({app_store_state})"
                         )
+                        delist_reason = ""
+
+                        # 已过审：版本仍显示上架时，用可售性 + 商店公开页二次确认（封号/强制下架常见）
+                        if (
+                            source == "APPROVED_APPS"
+                            and app_store_state in APPROVED_STATES
+                            and app_store_state not in DELISTED_STATES
+                        ):
+                            for_sale = check_asc_territory_for_sale(app_id, h)
+                            if for_sale is False:
+                                app_store_state = "REMOVED_FROM_SALE"
+                                friendly_state = APP_STORE_STATES.get(
+                                    app_store_state, friendly_state
+                                )
+                                delist_reason = "各地区均不可售（可能开发者下架或账号受限）"
+                            else:
+                                present = check_itunes_store_presence(app_id)
+                                if present is False:
+                                    app_store_state = "REMOVED_FROM_SALE"
+                                    friendly_state = APP_STORE_STATES.get(
+                                        app_store_state, friendly_state
+                                    )
+                                    delist_reason = "App Store 公开页已查无（可能封号或强制下架）"
 
                         last_state = state["last_state"]
                         last_version = state["last_version"]
@@ -511,6 +667,8 @@ def run_monitor_loop(
                                 header_printed = True
                             print(f"  📱 版本: {version_string}")
                             print(f"  📌 状态: {friendly_state}")
+                            if delist_reason:
+                                print(f"  ⚠️ {delist_reason}")
                         elif compact:
                             unchanged_rows.append(
                                 {"name": app_name, "ver": version_string, "state": friendly_state}
@@ -556,9 +714,16 @@ def run_monitor_loop(
                             print(f"  {msg}")
                             log_event(app_id, app_name, msg, app.get("MONITOR_DIR"))
                             if app_store_state in DELISTED_STATES:
-                                notify_delisted(
-                                    app_id, app_name, version_string, pushplus_token, feishu_webhook
-                                )
+                                # 已过审归档路径统一 notify，避免重复推送
+                                if source != "APPROVED_APPS":
+                                    notify_delisted(
+                                        app_id,
+                                        app_name,
+                                        version_string,
+                                        pushplus_token,
+                                        feishu_webhook,
+                                        reason=delist_reason or "App Store 版本状态为已下架",
+                                    )
                             elif app_store_state in APPROVED_STATES:
                                 pass  # 过审专用通知见下方 notify_success，避免重复推送
                             elif app_store_state in REJECTED_STATES and last_state not in REJECTED_STATES:
@@ -594,17 +759,22 @@ def run_monitor_loop(
 
                         if source == "APPROVED_APPS":
                             if app_store_state in DELISTED_STATES:
-                                if should_emit or state_changed:
-                                    ensure_round_banner()
-                                    print("  ❌ 应用已下架，移入「已下架」列表并停止监控。")
-                                log_event(
-                                    app_id,
-                                    app_name,
-                                    f"❌ 已下架: v{version_string} · {friendly_state}",
-                                    app.get("MONITOR_DIR"),
+                                _archive_delisted_approved(
+                                    config=config,
+                                    app=app,
+                                    app_states=app_states,
+                                    app_id=app_id,
+                                    app_name=app_name,
+                                    version_string=version_string,
+                                    app_store_state=app_store_state,
+                                    friendly_state=friendly_state,
+                                    pushplus_token=pushplus_token,
+                                    feishu_webhook=feishu_webhook,
+                                    reason=delist_reason
+                                    or "App Store 版本状态为已下架",
+                                    should_emit=should_emit or state_changed,
+                                    ensure_round_banner=ensure_round_banner,
                                 )
-                                archive_removed_app(config, app, version_string, app_store_state)
-                                app_states.pop(app_id, None)
                                 config_dirty = True
                             elif app_store_state not in APPROVED_STATES or version_changed:
                                 if should_emit or state_changed or version_changed:
@@ -659,11 +829,25 @@ def run_monitor_loop(
                         if status_code:
                             resp = getattr(e, "response", None)
                             detail = apple_error_detail(resp) if resp is not None else ""
-                            print(f"  ❌ 请求苹果接口失败 (状态码: {status_code}) {detail}")
-                            if status_code in [400, 401, 403, 404]:
-                                print("  🚨 认证失败或 App 未找到，请稍后检查该 App 的配置。")
-                                if status_code in (401, 403):
-                                    print("  💡 倒计时期间按 E+回车 可修改该应用配置。")
+                            if status_code in (401, 403):
+                                _handle_auth_failure(
+                                    app=app,
+                                    state=state,
+                                    source=source,
+                                    app_id=app_id,
+                                    app_name=app_name,
+                                    list_tag=list_tag,
+                                    round_no=round_no,
+                                    status_code=status_code,
+                                    detail=detail,
+                                    pushplus_token=pushplus_token,
+                                    feishu_webhook=feishu_webhook,
+                                    ensure_round_banner=ensure_round_banner,
+                                )
+                            else:
+                                print(f"  ❌ 请求苹果接口失败 (状态码: {status_code}) {detail}")
+                                if status_code in [400, 404]:
+                                    print("  🚨 认证失败或 App 未找到，请稍后检查该 App 的配置。")
                             break
                         print(f"  ❌ 网络异常: {e}")
                         if attempt < max_retries - 1:

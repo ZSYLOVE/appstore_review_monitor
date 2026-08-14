@@ -131,17 +131,37 @@ def notify_version_change(
         send_feishu(feishu_webhook, title, content)
 
 
-def notify_delisted(app_id, app_name, version_string, pushplus_token, feishu_webhook):
+def notify_delisted(
+    app_id, app_name, version_string, pushplus_token, feishu_webhook, reason: str = ""
+):
+    detail = reason or "已从 App Store 下架"
     mac_notification(
         "App 已下架 ❌",
-        f"您的 App【{app_name}】v{version_string} 已从 App Store 下架。",
+        f"您的 App【{app_name}】v{version_string}：{detail}",
     )
     play_sound("Basso")
     title = f"❌ 【{app_name}】已下架"
     content = (
         f"<h3>❌ 应用已下架</h3><p>您的 App <b>【{app_name}】</b>(ID: {app_id}) "
-        f"v{version_string} 已从 App Store 下架。</p>"
+        f"v{version_string}：{detail}。</p>"
         f"<p>请登录 App Store Connect 查看详情。</p>"
+    )
+    if pushplus_token:
+        send_pushplus(pushplus_token, title, content)
+    if feishu_webhook:
+        send_feishu(feishu_webhook, title, content)
+
+
+def notify_access_lost(app_id, app_name, pushplus_token, feishu_webhook, detail: str = ""):
+    """连续认证失败时提示账号/密钥异常（封号常见表现）。"""
+    tip = detail or "App Store Connect API 连续认证失败，可能是密钥失效或账号异常（含封号）"
+    mac_notification("账号/密钥异常 ⚠️", f"【{app_name}】{tip}")
+    play_sound("Basso")
+    title = f"⚠️ 【{app_name}】账号或密钥异常"
+    content = (
+        f"<h3>⚠️ 无法访问 App Store Connect</h3>"
+        f"<p>您的 App <b>【{app_name}】</b>(ID: {app_id})：{tip}。</p>"
+        f"<p>请检查 API Key / Issuer，并登录 Apple Developer / ASC 确认账号状态。</p>"
     )
     if pushplus_token:
         send_pushplus(pushplus_token, title, content)
