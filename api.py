@@ -1,4 +1,5 @@
 import os
+import re
 from typing import Optional, Tuple
 
 from .auth import make_token, read_p8_key
@@ -69,6 +70,14 @@ def version_store_state(attributes: dict) -> str:
     return new or "UNKNOWN_STATE"
 
 
+def _version_key(version: str) -> tuple:
+    """Convert App Store version strings to comparable numeric tuples."""
+    parts = [int(piece) for piece in re.findall(r"\d+", str(version or ""))]
+    while len(parts) > 1 and parts[-1] == 0:
+        parts.pop()
+    return tuple(parts)
+
+
 def pick_monitor_version(
     versions: list,
     preferred_version: Optional[str] = None,
@@ -88,6 +97,26 @@ def pick_monitor_version(
 
     def _ver(v: dict) -> str:
         return str((v.get("attributes") or {}).get("versionString") or "")
+
+    if purpose == "approved" and preferred_version:
+        preferred_key = _version_key(str(preferred_version))
+        newer_versions = [
+            v
+            for v in versions
+            if _version_key(_ver(v)) > preferred_key
+            and _state(v) != "REPLACED_WITH_NEW_VERSION"
+        ]
+        if newer_versions:
+            newest_key = max(_version_key(_ver(v)) for v in newer_versions)
+            newest_versions = [
+                v for v in newer_versions if _version_key(_ver(v)) == newest_key
+            ]
+            for states in (PIPELINE_STATES, REJECTED_STATES, APPROVED_STATES):
+                for st in states:
+                    for v in newest_versions:
+                        if _state(v) == st:
+                            return v
+            return newest_versions[0]
 
     if preferred_version:
         for v in versions:
