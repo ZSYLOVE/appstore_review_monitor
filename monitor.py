@@ -870,15 +870,23 @@ def _run_monitor_loop_inner(
                                     ensure_round_banner=ensure_round_banner,
                                 )
                                 config_dirty = True
-                            elif app_store_state not in APPROVED_STATES or version_changed:
+                            elif app_store_state not in APPROVED_STATES:
                                 if should_emit or state_changed or version_changed:
                                     ensure_round_banner()
-                                    print("  ♻️ 检测到新版本或非上架状态，移回「待监控」列表。")
+                                    print("  ♻️ 新版本尚未过审，移回「待监控」列表。")
                                 restore_app_to_pending(config, app)
                                 state["is_done"] = False
                                 state["source"] = "APPS"
                                 apps[:] = config.get("APPS", [])
                                 config_dirty = True
+                            elif version_changed:
+                                app["APPROVED_VERSION"] = version_string
+                                app["APPROVED_STATE"] = app_store_state
+                                state["is_done"] = True
+                                config_dirty = True
+                                if should_emit:
+                                    ensure_round_banner()
+                                    print("  ✅ 新版本已过审，继续保留在「已过审」列表。")
                         elif app_store_state in APPROVED_STATES:
                             # 仍有其它版本在审/被拒时，当前 READY 多半是旧上架版，禁止误报过审
                             sibling_in_flight = False
